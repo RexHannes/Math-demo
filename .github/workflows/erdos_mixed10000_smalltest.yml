@@ -32,12 +32,21 @@ jobs:
   small-test:
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ libboost-all-dev python3
+
       - name: Build
         run: |
-          mkdir -p build
-          g++ -O3 -std=c++17 -march=native src/analyze_certificate_dependencies.cpp -o build/analyze_certificate_dependencies
+          mkdir -p build logs results
+          g++ -O3 -std=c++17 -march=native src/analyze_certificate_dependencies.cpp -o build/analyze_certificate_dependencies \
+            2>&1 | tee logs/build.log
       - name: Run small range
         run: |
           mkdir -p results logs
@@ -53,10 +62,11 @@ jobs:
           done
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smalltest-M${{ github.event.inputs.start_M }}-${{ github.event.inputs.end_M }}
           path: |
-            results/*
-            logs/*
+            results/**
+            logs/**
           retention-days: 30
+          if-no-files-found: warn
