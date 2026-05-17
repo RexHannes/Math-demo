@@ -65,3 +65,26 @@ The program uses `--prefix`, not `--out`, and writes:
 <prefix>_summary_by_M.csv
 <prefix>_report.json
 ```
+
+## Mod-33 Probe
+
+The repo now also contains a separate composite-modulus probe centered on the `33 = 3 * 11` regime:
+
+- `src/probe_specific_modulus.cpp`
+- `.github/workflows/erdos_mod33_smalltest.yml`
+- `.github/workflows/erdos_mod33_regime.yml`
+- `scripts/summarize_modulus_probe.py`
+- `preliminary_results/probe33_230_370_*.csv`
+- `docs/mod33_regime_probe.md`
+
+This line is worth trying. It is not a replacement for the original mixed-modulus pipeline, but it pushes in a genuinely different direction: whether a clean composite modulus can absorb part of the range without leaning on linked-prime adjacent-pair certificates.
+
+Suggested order:
+
+1. Run `Erdős mod-33 small test`.
+2. If it passes, run `Erdős mod-33 regime scan`.
+3. Download artifacts and summarize them with:
+
+```bash
+python3 scripts/summarize_modulus_probe.py artifacts
+```

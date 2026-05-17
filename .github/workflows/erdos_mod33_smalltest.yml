@@ -1,0 +1,68 @@
+name: Erdős mod-33 small test
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_M:
+        description: "Starting M"
+        required: true
+        default: "240"
+      end_M:
+        description: "Ending M"
+        required: true
+        default: "250"
+      modulus:
+        description: "Modulus to test"
+        required: true
+        default: "33"
+
+jobs:
+  small-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ libboost-all-dev python3
+
+      - name: Verify toolchain and Boost headers
+        run: |
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          which g++
+          g++ --version
+          dpkg -s libboost-all-dev | sed -n '1,40p'
+          test -f /usr/include/boost/multiprecision/cpp_int.hpp
+          ls -l /usr/include/boost/multiprecision/cpp_int.hpp
+
+      - name: Build probe
+        run: |
+          mkdir -p results logs
+          g++ -O3 -std=c++17 -I/usr/include src/probe_specific_modulus.cpp -o probe_modulus \
+            2>&1 | tee logs/build_mod33.log
+
+      - name: Run probe
+        run: |
+          mkdir -p results logs
+          ./probe_modulus \
+            --M-min "${{ github.event.inputs.start_M }}" \
+            --M-max "${{ github.event.inputs.end_M }}" \
+            --modulus "${{ github.event.inputs.modulus }}" \
+            --prefix "results/mod${{ github.event.inputs.modulus }}_M${{ github.event.inputs.start_M }}_${{ github.event.inputs.end_M }}" \
+            2>&1 | tee logs/run_mod33.log
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mod${{ github.event.inputs.modulus }}-small-M${{ github.event.inputs.start_M }}-${{ github.event.inputs.end_M }}
+          path: |
+            results/**
+            logs/**
+          retention-days: 30
+          if-no-files-found: warn

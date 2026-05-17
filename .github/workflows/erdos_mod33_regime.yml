@@ -1,0 +1,77 @@
+name: Erdős mod-33 regime scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      modulus:
+        description: "Modulus to test"
+        required: true
+        default: "33"
+
+jobs:
+  scan-ranges:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        range:
+          - { start: 200, end: 250 }
+          - { start: 251, end: 300 }
+          - { start: 301, end: 350 }
+          - { start: 351, end: 400 }
+          - { start: 401, end: 450 }
+          - { start: 451, end: 500 }
+          - { start: 501, end: 550 }
+          - { start: 551, end: 600 }
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ libboost-all-dev python3
+
+      - name: Verify toolchain and Boost headers
+        run: |
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          which g++
+          g++ --version
+          dpkg -s libboost-all-dev | sed -n '1,40p'
+          test -f /usr/include/boost/multiprecision/cpp_int.hpp
+          ls -l /usr/include/boost/multiprecision/cpp_int.hpp
+
+      - name: Build probe
+        run: |
+          mkdir -p results logs
+          g++ -O3 -std=c++17 -I/usr/include src/probe_specific_modulus.cpp -o probe_modulus \
+            2>&1 | tee logs/build_mod33_${{ matrix.range.start }}_${{ matrix.range.end }}.log
+
+      - name: Run range one M at a time
+        run: |
+          mkdir -p results logs
+          for M in $(seq ${{ matrix.range.start }} ${{ matrix.range.end }}); do
+            echo "===== M=$M =====" | tee -a logs/run_${{ matrix.range.start }}_${{ matrix.range.end }}.log
+            ./probe_modulus \
+              --M-min "$M" \
+              --M-max "$M" \
+              --modulus "${{ github.event.inputs.modulus }}" \
+              --prefix "results/mod${{ github.event.inputs.modulus }}_M${M}" \
+              2>&1 | tee -a logs/run_${{ matrix.range.start }}_${{ matrix.range.end }}.log
+          done
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mod${{ github.event.inputs.modulus }}-M${{ matrix.range.start }}-${{ matrix.range.end }}
+          path: |
+            results/**
+            logs/**
+          retention-days: 30
+          if-no-files-found: warn
