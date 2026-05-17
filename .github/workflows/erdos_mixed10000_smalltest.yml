@@ -42,10 +42,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++ libboost-all-dev python3
 
+      - name: Verify toolchain and Boost headers
+        run: |
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          which g++
+          g++ --version
+          dpkg -s libboost-all-dev | sed -n '1,40p'
+          test -f /usr/include/boost/multiprecision/cpp_int.hpp
+          ls -l /usr/include/boost/multiprecision/cpp_int.hpp
+
       - name: Build
         run: |
           mkdir -p build logs results
-          g++ -O3 -std=c++17 -march=native src/analyze_certificate_dependencies.cpp -o build/analyze_certificate_dependencies \
+          g++ -O3 -std=c++17 -march=native -I/usr/include src/analyze_certificate_dependencies.cpp -o build/analyze_certificate_dependencies \
             2>&1 | tee logs/build.log
       - name: Run small range
         run: |

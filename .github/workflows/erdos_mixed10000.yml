@@ -56,6 +56,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++ libboost-all-dev python3
 
+      - name: Verify toolchain and Boost headers
+        run: |
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          which g++
+          g++ --version
+          dpkg -s libboost-all-dev | sed -n '1,40p'
+          test -f /usr/include/boost/multiprecision/cpp_int.hpp
+          ls -l /usr/include/boost/multiprecision/cpp_int.hpp
+
       - name: Show runner info
         run: |
           uname -a
@@ -65,7 +74,7 @@ jobs:
       - name: Build diagnostic binary
         run: |
           mkdir -p build logs results
-          g++ ${{ github.event.inputs.compile_flags }} src/analyze_certificate_dependencies.cpp -o build/analyze_certificate_dependencies \
+          g++ ${{ github.event.inputs.compile_flags }} -I/usr/include src/analyze_certificate_dependencies.cpp -o build/analyze_certificate_dependencies \
             2>&1 | tee logs/build_${{ matrix.range.start }}_${{ matrix.range.end }}.log
 
       - name: Run diagnostic one M at a time
