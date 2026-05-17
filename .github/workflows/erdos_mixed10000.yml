@@ -1,0 +1,89 @@
+name: Erdős mixed-modulus diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      mixed_limit:
+        description: "Mixed modulus limit"
+        required: true
+        default: "10000"
+      prime_limit:
+        description: "Direct prime modulus limit"
+        required: true
+        default: "1000"
+      dense_min_len:
+        description: "Dense forced-hole minimum window length"
+        required: true
+        default: "20"
+      J:
+        description: "Forced-layer J parameter"
+        required: true
+        default: "12"
+      compile_flags:
+        description: "C++ compile flags"
+        required: true
+        default: "-O3 -std=c++17 -march=native"
+
+jobs:
+  mixed-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        range:
+          - { start: 101, end: 110 }
+          - { start: 111, end: 120 }
+          - { start: 121, end: 130 }
+          - { start: 131, end: 140 }
+          - { start: 141, end: 150 }
+          - { start: 151, end: 160 }
+          - { start: 161, end: 170 }
+          - { start: 171, end: 180 }
+          - { start: 181, end: 190 }
+          - { start: 191, end: 200 }
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show runner info
+        run: |
+          uname -a
+          g++ --version
+          nproc
+
+      - name: Build diagnostic binary
+        run: |
+          mkdir -p build
+          g++ ${{ github.event.inputs.compile_flags }} src/analyze_certificate_dependencies.cpp -o build/analyze_certificate_dependencies
+
+      - name: Run diagnostic one M at a time
+        run: |
+          mkdir -p results logs
+          for M in $(seq ${{ matrix.range.start }} ${{ matrix.range.end }}); do
+            echo "===== Running M=$M =====" | tee -a logs/run_${{ matrix.range.start }}_${{ matrix.range.end }}.log
+            prefix="results/diag_M${M}_mix${{ github.event.inputs.mixed_limit }}_L${{ github.event.inputs.dense_min_len }}"
+            ./build/analyze_certificate_dependencies \
+              --M-min "$M" \
+              --M-max "$M" \
+              --prime-limit "${{ github.event.inputs.prime_limit }}" \
+              --mixed-limit "${{ github.event.inputs.mixed_limit }}" \
+              --J "${{ github.event.inputs.J }}" \
+              --dense-min-len "${{ github.event.inputs.dense_min_len }}" \
+              --prefix "$prefix" \
+              2>&1 | tee -a logs/run_${{ matrix.range.start }}_${{ matrix.range.end }}.log
+            echo "===== Finished M=$M =====" | tee -a logs/run_${{ matrix.range.start }}_${{ matrix.range.end }}.log
+          done
+
+      - name: Upload result artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-M${{ matrix.range.start }}-${{ matrix.range.end }}-mix${{ github.event.inputs.mixed_limit }}-L${{ github.event.inputs.dense_min_len }}
+          path: |
+            results/*
+            logs/*
+          retention-days: 30

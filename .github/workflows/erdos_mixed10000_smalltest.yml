@@ -1,0 +1,62 @@
+name: Erdős mixed-modulus small test
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_M:
+        description: "Start M"
+        required: true
+        default: "101"
+      end_M:
+        description: "End M"
+        required: true
+        default: "102"
+      mixed_limit:
+        description: "Mixed modulus limit"
+        required: true
+        default: "10000"
+      prime_limit:
+        description: "Direct prime modulus limit"
+        required: true
+        default: "1000"
+      dense_min_len:
+        description: "Dense forced-hole minimum window length"
+        required: true
+        default: "20"
+      J:
+        description: "Forced-layer J parameter"
+        required: true
+        default: "12"
+
+jobs:
+  small-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          mkdir -p build
+          g++ -O3 -std=c++17 -march=native src/analyze_certificate_dependencies.cpp -o build/analyze_certificate_dependencies
+      - name: Run small range
+        run: |
+          mkdir -p results logs
+          for M in $(seq ${{ github.event.inputs.start_M }} ${{ github.event.inputs.end_M }}); do
+            prefix="results/diag_M${M}_mix${{ github.event.inputs.mixed_limit }}_L${{ github.event.inputs.dense_min_len }}"
+            ./build/analyze_certificate_dependencies \
+              --M-min "$M" --M-max "$M" \
+              --prime-limit "${{ github.event.inputs.prime_limit }}" \
+              --mixed-limit "${{ github.event.inputs.mixed_limit }}" \
+              --J "${{ github.event.inputs.J }}" \
+              --dense-min-len "${{ github.event.inputs.dense_min_len }}" \
+              --prefix "$prefix" 2>&1 | tee -a logs/smalltest.log
+          done
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smalltest-M${{ github.event.inputs.start_M }}-${{ github.event.inputs.end_M }}
+          path: |
+            results/*
+            logs/*
+          retention-days: 30
