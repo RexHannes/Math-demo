@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -10,10 +12,26 @@
 #include <numeric>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 using namespace std;
+
+static volatile sig_atomic_t g_stop_requested = 0;
+
+static void handle_stop_signal(int) {
+    g_stop_requested = 1;
+}
+
+static bool stop_requested() {
+    return g_stop_requested != 0;
+}
+
+static void install_signal_handlers() {
+    signal(SIGINT, handle_stop_signal);
+    signal(SIGTERM, handle_stop_signal);
+}
 
 struct PrimeInfo {
     int p;
@@ -133,11 +151,13 @@ struct RunConfig {
     double high = 1.001;
     string out_path;
     string progress_path;
-    uint64_t progress_every = 100000;
+    uint64_t progress_every = 10000000;
     int sample_limit = 5;
 };
 
 struct RunResult {
+    bool completed = true;
+    bool interrupted = false;
     int N = 0;
     int P = 0;
     double low = 0.0;
@@ -155,17 +175,105 @@ struct RunResult {
     double seconds = 0.0;
 };
 
+static void write_json_atomically(const string& path, const function<void(ostream&)>& writer) {
+    if (path.empty()) return;
+    string tmp_path = path + ".tmp";
+    ofstream out(tmp_path);
+    writer(out);
+    out.close();
+    rename(tmp_path.c_str(), path.c_str());
+}
+
 static void write_progress_snapshot(const string& path, const map<string, string>& fields) {
     if (path.empty()) return;
-    ofstream out(path);
-    out << "{\n";
-    bool first = true;
-    for (const auto& [key, value] : fields) {
-        if (!first) out << ",\n";
-        first = false;
-        out << "  \"" << json_escape(key) << "\": " << value;
-    }
-    out << "\n}\n";
+    write_json_atomically(path, [&](ostream& out) {
+        out << "{\n";
+        bool first = true;
+        for (const auto& [key, value] : fields) {
+            if (!first) out << ",\n";
+            first = false;
+            out << "  \"" << json_escape(key) << "\": " << value;
+        }
+        out << "\n}\n";
+    });
+}
+
+static void write_partial_result_json(const RunConfig& config,
+                                      const vector<string>& tests,
+                                      const ProgressState& progress,
+                                      const vector<CandidateSample>& samples,
+                                      uint64_t unique_mask_count,
+                                      const string& out_path,
+                                      double seconds,
+                                      bool interrupted,
+                                      int checkpoint_last,
+                                      double checkpoint_sum) {
+    write_json_atomically(out_path, [&](ostream& out) {
+        out << "{\n";
+        out << "  \"generated_at\": \"" << time(nullptr) << "\",\n";
+        out << "  \"completed\": false,\n";
+        out << "  \"interrupted\": " << (interrupted ? "true" : "false") << ",\n";
+        out << "  \"runs\": [\n";
+        out << "    {\n";
+        out << "      \"mode\": \"hyb\",\n";
+        out << "      \"N\": " << config.N << ",\n";
+        out << "      \"P\": " << config.P << ",\n";
+        out << "      \"low\": " << config.low << ",\n";
+        out << "      \"high\": " << config.high << ",\n";
+        out << "      \"test_count\": " << tests.size() << ",\n";
+        out << "      \"tests\": [";
+        for (size_t i = 0; i < tests.size(); ++i) {
+            if (i) out << ", ";
+            out << '"' << tests[i] << '"';
+        }
+        out << "],\n";
+        out << "      \"nodes\": " << progress.nodes << ",\n";
+        out << "      \"near_count\": " << progress.near_count << ",\n";
+        out << "      \"exact_hit_count\": null,\n";
+        out << "      \"exact_hits_sample\": [],\n";
+        out << "      \"unique_mask_count\": " << unique_mask_count << ",\n";
+        out << "      \"minimal_cover_size\": null,\n";
+        out << "      \"minimal_covers_sample\": [],\n";
+        out << "      \"first_uncovered\": ";
+        if (progress.first_uncovered.empty()) {
+            out << "null";
+        } else {
+            out << "[";
+            for (size_t i = 0; i < progress.first_uncovered.size(); ++i) {
+                if (i) out << ", ";
+                out << progress.first_uncovered[i];
+            }
+            out << "]";
+        }
+        out << ",\n";
+        out << "      \"top_masks\": [],\n";
+        out << "      \"sample_candidates\": [\n";
+        for (size_t i = 0; i < samples.size(); ++i) {
+            const auto& sample = samples[i];
+            out << "        {\"S\": [";
+            for (size_t j = 0; j < sample.S.size(); ++j) {
+                if (j) out << ", ";
+                out << sample.S[j];
+            }
+            out << "], \"sum_float\": " << fixed << setprecision(10) << sample.sum_float
+                << ", \"kill_mask\": " << sample.kill_mask << ", \"kills\": [";
+            auto labels = bits_to_labels(sample.kill_mask, tests);
+            for (size_t j = 0; j < labels.size(); ++j) {
+                if (j) out << ", ";
+                out << '"' << labels[j] << '"';
+            }
+            out << "]}";
+            if (i + 1 < samples.size()) out << ",";
+            out << "\n";
+        }
+        out << "      ],\n";
+        out << "      \"checkpoint_last\": " << checkpoint_last << ",\n";
+        out << "      \"checkpoint_sum_float\": " << fixed << setprecision(10) << checkpoint_sum << ",\n";
+        out << "      \"seconds\": " << seconds << "\n";
+        out << "    }\n";
+        out << "  ]\n";
+        out << "}\n";
+    });
 }
 
 static RunResult run_cover_hyb(const RunConfig& config) {
@@ -173,6 +281,9 @@ static RunResult run_cover_hyb(const RunConfig& config) {
     vector<int> primes = primes_upto(config.P);
     vector<string> labels;
     for (int p : primes) labels.push_back(to_string(p));
+
+    vector<double> reciprocal(config.N + 1, 0.0);
+    for (int n = 2; n <= config.N; ++n) reciprocal[n] = 1.0 / static_cast<double>(n);
 
     vector<double> suffix = suffix_harmonic_float(config.N);
     vector<vector<DenominatorPrimeData>> per_denom(config.N + 1, vector<DenominatorPrimeData>(primes.size()));
@@ -189,12 +300,39 @@ static RunResult run_cover_hyb(const RunConfig& config) {
         }
     }
 
-    map<uint64_t, uint64_t> unique_masks;
+    unordered_map<uint64_t, uint64_t> unique_masks;
+    if (primes.size() < 20) {
+        unique_masks.reserve(1ULL << primes.size());
+    } else {
+        unique_masks.reserve(1ULL << 20);
+    }
     vector<CandidateSample> samples;
     ProgressState progress;
     vector<int> current_set;
     vector<int> current_max_v(primes.size(), 0);
     vector<int> current_top_sum(primes.size(), 0);
+    int last_checkpoint_last = 0;
+    double last_checkpoint_sum = 0.0;
+
+    auto checkpoint_partial = [&](int last, double current_sum, bool interrupted) {
+        last_checkpoint_last = last;
+        last_checkpoint_sum = current_sum;
+        double elapsed = chrono::duration<double>(chrono::steady_clock::now() - started).count();
+        write_partial_result_json(
+            config,
+            labels,
+            progress,
+            samples,
+            static_cast<uint64_t>(unique_masks.size()),
+            config.out_path,
+            elapsed,
+            interrupted,
+            last,
+            current_sum
+        );
+    };
+
+    checkpoint_partial(0, 0.0, false);
 
     auto heartbeat = [&](int last, double current_sum) {
         if (config.progress_every == 0 || progress.nodes % config.progress_every != 0) return;
@@ -236,13 +374,16 @@ static RunResult run_cover_hyb(const RunConfig& config) {
             fields["first_uncovered"] = out.str();
         }
         write_progress_snapshot(config.progress_path, fields);
+        checkpoint_partial(last, current_sum, stop_requested());
     };
 
     function<void(int, double, const vector<int>&, const vector<int>&)> visit =
         [&](int last, double current_sum, const vector<int>& max_v, const vector<int>& top_sum) {
+            if (stop_requested()) return;
             progress.nodes += 1;
             heartbeat(last, current_sum);
 
+            if (stop_requested()) return;
             if (current_sum > config.high) return;
             if (last + 1 <= config.N && current_sum + suffix[last + 1] < config.low) return;
 
@@ -269,6 +410,7 @@ static RunResult run_cover_hyb(const RunConfig& config) {
             }
 
             for (int next : {last + 1, last + 2}) {
+                if (stop_requested()) return;
                 if (next > config.N) continue;
                 vector<int> next_max_v = max_v;
                 vector<int> next_top_sum = top_sum;
@@ -283,12 +425,13 @@ static RunResult run_cover_hyb(const RunConfig& config) {
                 }
 
                 current_set.push_back(next);
-                visit(next, current_sum + 1.0 / static_cast<double>(next), next_max_v, next_top_sum);
+                visit(next, current_sum + reciprocal[next], next_max_v, next_top_sum);
                 current_set.pop_back();
             }
         };
 
     for (int start = 2; start <= config.N; ++start) {
+        if (stop_requested()) break;
         vector<int> next_max_v = current_max_v;
         vector<int> next_top_sum = current_top_sum;
         for (size_t i = 0; i < primes.size(); ++i) {
@@ -301,7 +444,27 @@ static RunResult run_cover_hyb(const RunConfig& config) {
             }
         }
         current_set = {start};
-        visit(start, 1.0 / static_cast<double>(start), next_max_v, next_top_sum);
+        visit(start, reciprocal[start], next_max_v, next_top_sum);
+    }
+
+    if (stop_requested()) {
+        checkpoint_partial(last_checkpoint_last, last_checkpoint_sum, true);
+        RunResult result;
+        result.completed = false;
+        result.interrupted = true;
+        result.N = config.N;
+        result.P = config.P;
+        result.low = config.low;
+        result.high = config.high;
+        result.test_count = static_cast<int>(labels.size());
+        result.tests = labels;
+        result.nodes = progress.nodes;
+        result.near_count = progress.near_count;
+        result.unique_mask_count = static_cast<uint64_t>(unique_masks.size());
+        result.first_uncovered = progress.first_uncovered;
+        result.samples = samples;
+        result.seconds = chrono::duration<double>(chrono::steady_clock::now() - started).count();
+        return result;
     }
 
     vector<uint64_t> mask_keys;
@@ -316,6 +479,8 @@ static RunResult run_cover_hyb(const RunConfig& config) {
     if (sorted_masks.size() > 20) sorted_masks.resize(20);
 
     RunResult result;
+    result.completed = true;
+    result.interrupted = false;
     result.N = config.N;
     result.P = config.P;
     result.low = config.low;
@@ -335,93 +500,97 @@ static RunResult run_cover_hyb(const RunConfig& config) {
 }
 
 static void write_result_json(const RunResult& result, const string& out_path) {
-    ofstream out(out_path);
-    out << "{\n";
-    out << "  \"generated_at\": \"" << time(nullptr) << "\",\n";
-    out << "  \"runs\": [\n";
-    out << "    {\n";
-    out << "      \"mode\": \"hyb\",\n";
-    out << "      \"N\": " << result.N << ",\n";
-    out << "      \"P\": " << result.P << ",\n";
-    out << "      \"low\": " << result.low << ",\n";
-    out << "      \"high\": " << result.high << ",\n";
-    out << "      \"test_count\": " << result.test_count << ",\n";
-    out << "      \"tests\": [";
-    for (size_t i = 0; i < result.tests.size(); ++i) {
-        if (i) out << ", ";
-        out << '"' << result.tests[i] << '"';
-    }
-    out << "],\n";
-    out << "      \"nodes\": " << result.nodes << ",\n";
-    out << "      \"near_count\": " << result.near_count << ",\n";
-    out << "      \"exact_hit_count\": null,\n";
-    out << "      \"exact_hits_sample\": [],\n";
-    out << "      \"unique_mask_count\": " << result.unique_mask_count << ",\n";
-    out << "      \"minimal_cover_size\": " << result.minimal_cover_size << ",\n";
-    out << "      \"minimal_covers_sample\": [";
-    for (size_t i = 0; i < result.minimal_covers_sample.size(); ++i) {
-        if (i) out << ", ";
-        out << "[";
-        for (size_t j = 0; j < result.minimal_covers_sample[i].size(); ++j) {
-            if (j) out << ", ";
-            out << '"' << result.minimal_covers_sample[i][j] << '"';
-        }
-        out << "]";
-    }
-    out << "],\n";
-    out << "      \"first_uncovered\": ";
-    if (result.first_uncovered.empty()) {
-        out << "null";
-    } else {
-        out << "[";
-        for (size_t i = 0; i < result.first_uncovered.size(); ++i) {
+    write_json_atomically(out_path, [&](ostream& out) {
+        out << "{\n";
+        out << "  \"generated_at\": \"" << time(nullptr) << "\",\n";
+        out << "  \"completed\": " << (result.completed ? "true" : "false") << ",\n";
+        out << "  \"interrupted\": " << (result.interrupted ? "true" : "false") << ",\n";
+        out << "  \"runs\": [\n";
+        out << "    {\n";
+        out << "      \"mode\": \"hyb\",\n";
+        out << "      \"N\": " << result.N << ",\n";
+        out << "      \"P\": " << result.P << ",\n";
+        out << "      \"low\": " << result.low << ",\n";
+        out << "      \"high\": " << result.high << ",\n";
+        out << "      \"test_count\": " << result.test_count << ",\n";
+        out << "      \"tests\": [";
+        for (size_t i = 0; i < result.tests.size(); ++i) {
             if (i) out << ", ";
-            out << result.first_uncovered[i];
+            out << '"' << result.tests[i] << '"';
         }
-        out << "]";
-    }
-    out << ",\n";
-    out << "      \"top_masks\": [\n";
-    for (size_t i = 0; i < result.top_masks.size(); ++i) {
-        const auto& [mask, count] = result.top_masks[i];
-        out << "        {\"count\": " << count << ", \"kills\": [";
-        auto labels = bits_to_labels(mask, result.tests);
-        for (size_t j = 0; j < labels.size(); ++j) {
-            if (j) out << ", ";
-            out << '"' << labels[j] << '"';
+        out << "],\n";
+        out << "      \"nodes\": " << result.nodes << ",\n";
+        out << "      \"near_count\": " << result.near_count << ",\n";
+        out << "      \"exact_hit_count\": null,\n";
+        out << "      \"exact_hits_sample\": [],\n";
+        out << "      \"unique_mask_count\": " << result.unique_mask_count << ",\n";
+        out << "      \"minimal_cover_size\": " << result.minimal_cover_size << ",\n";
+        out << "      \"minimal_covers_sample\": [";
+        for (size_t i = 0; i < result.minimal_covers_sample.size(); ++i) {
+            if (i) out << ", ";
+            out << "[";
+            for (size_t j = 0; j < result.minimal_covers_sample[i].size(); ++j) {
+                if (j) out << ", ";
+                out << '"' << result.minimal_covers_sample[i][j] << '"';
+            }
+            out << "]";
         }
-        out << "], \"mask\": " << mask << "}";
-        if (i + 1 < result.top_masks.size()) out << ",";
-        out << "\n";
-    }
-    out << "      ],\n";
-    out << "      \"sample_candidates\": [\n";
-    for (size_t i = 0; i < result.samples.size(); ++i) {
-        const auto& sample = result.samples[i];
-        out << "        {\"S\": [";
-        for (size_t j = 0; j < sample.S.size(); ++j) {
-            if (j) out << ", ";
-            out << sample.S[j];
+        out << "],\n";
+        out << "      \"first_uncovered\": ";
+        if (result.first_uncovered.empty()) {
+            out << "null";
+        } else {
+            out << "[";
+            for (size_t i = 0; i < result.first_uncovered.size(); ++i) {
+                if (i) out << ", ";
+                out << result.first_uncovered[i];
+            }
+            out << "]";
         }
-        out << "], \"sum_float\": " << fixed << setprecision(10) << sample.sum_float
-            << ", \"kill_mask\": " << sample.kill_mask << ", \"kills\": [";
-        auto labels = bits_to_labels(sample.kill_mask, result.tests);
-        for (size_t j = 0; j < labels.size(); ++j) {
-            if (j) out << ", ";
-            out << '"' << labels[j] << '"';
+        out << ",\n";
+        out << "      \"top_masks\": [\n";
+        for (size_t i = 0; i < result.top_masks.size(); ++i) {
+            const auto& [mask, count] = result.top_masks[i];
+            out << "        {\"count\": " << count << ", \"kills\": [";
+            auto labels = bits_to_labels(mask, result.tests);
+            for (size_t j = 0; j < labels.size(); ++j) {
+                if (j) out << ", ";
+                out << '"' << labels[j] << '"';
+            }
+            out << "], \"mask\": " << mask << "}";
+            if (i + 1 < result.top_masks.size()) out << ",";
+            out << "\n";
         }
-        out << "]}";
-        if (i + 1 < result.samples.size()) out << ",";
-        out << "\n";
-    }
-    out << "      ],\n";
-    out << "      \"seconds\": " << result.seconds << "\n";
-    out << "    }\n";
-    out << "  ]\n";
-    out << "}\n";
+        out << "      ],\n";
+        out << "      \"sample_candidates\": [\n";
+        for (size_t i = 0; i < result.samples.size(); ++i) {
+            const auto& sample = result.samples[i];
+            out << "        {\"S\": [";
+            for (size_t j = 0; j < sample.S.size(); ++j) {
+                if (j) out << ", ";
+                out << sample.S[j];
+            }
+            out << "], \"sum_float\": " << fixed << setprecision(10) << sample.sum_float
+                << ", \"kill_mask\": " << sample.kill_mask << ", \"kills\": [";
+            auto labels = bits_to_labels(sample.kill_mask, result.tests);
+            for (size_t j = 0; j < labels.size(); ++j) {
+                if (j) out << ", ";
+                out << '"' << labels[j] << '"';
+            }
+            out << "]}";
+            if (i + 1 < result.samples.size()) out << ",";
+            out << "\n";
+        }
+        out << "      ],\n";
+        out << "      \"seconds\": " << result.seconds << "\n";
+        out << "    }\n";
+        out << "  ]\n";
+        out << "}\n";
+    });
 }
 
 int main(int argc, char** argv) {
+    install_signal_handlers();
     RunConfig config;
     for (int i = 1; i < argc; ++i) {
         string arg = argv[i];
@@ -445,27 +614,32 @@ int main(int argc, char** argv) {
          << ", window=[" << config.low << "," << config.high << "]"
          << endl;
     RunResult result = run_cover_hyb(config);
-    write_result_json(result, config.out_path);
+    if (result.completed) {
+        write_result_json(result, config.out_path);
+    }
 
     map<string, string> fields;
-    fields["completed"] = "true";
+    fields["completed"] = result.completed ? "true" : "false";
+    fields["interrupted"] = result.interrupted ? "true" : "false";
     fields["N"] = to_string(result.N);
     fields["P"] = to_string(result.P);
     fields["nodes"] = to_string(result.nodes);
     fields["near_count"] = to_string(result.near_count);
     fields["unique_mask_count"] = to_string(result.unique_mask_count);
-    fields["minimal_cover_size"] = to_string(result.minimal_cover_size);
+    fields["minimal_cover_size"] = result.completed ? to_string(result.minimal_cover_size) : "null";
     fields["seconds"] = "\"" + to_string(result.seconds) + "\"";
     write_progress_snapshot(config.progress_path, fields);
 
     cout << "{\n"
+         << "  \"completed\": " << (result.completed ? "true" : "false") << ",\n"
+         << "  \"interrupted\": " << (result.interrupted ? "true" : "false") << ",\n"
          << "  \"mode\": \"hyb\",\n"
          << "  \"N\": " << result.N << ",\n"
          << "  \"P\": " << result.P << ",\n"
          << "  \"nodes\": " << result.nodes << ",\n"
          << "  \"near_count\": " << result.near_count << ",\n"
          << "  \"unique_mask_count\": " << result.unique_mask_count << ",\n"
-         << "  \"minimal_cover_size\": " << result.minimal_cover_size << ",\n"
+         << "  \"minimal_cover_size\": " << (result.completed ? to_string(result.minimal_cover_size) : "null") << ",\n"
          << "  \"first_uncovered\": " << (result.first_uncovered.empty() ? "null" : "\"present\"") << ",\n"
          << "  \"seconds\": " << result.seconds << "\n"
          << "}\n";
