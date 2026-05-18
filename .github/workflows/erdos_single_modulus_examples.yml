@@ -1,0 +1,67 @@
+name: Erdős single modulus with examples
+
+on:
+  workflow_dispatch:
+    inputs:
+      M_min:
+        description: "Starting M"
+        required: true
+        default: "242"
+      M_max:
+        description: "Ending M"
+        required: true
+        default: "362"
+      modulus:
+        description: "Modulus to inspect"
+        required: true
+        default: "33"
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ libboost-all-dev python3
+
+      - name: Verify toolchain and Boost headers
+        run: |
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          which g++
+          g++ --version
+          dpkg -s libboost-all-dev | sed -n '1,40p'
+          test -f /usr/include/boost/multiprecision/cpp_int.hpp
+          ls -l /usr/include/boost/multiprecision/cpp_int.hpp
+
+      - name: Build probe
+        run: |
+          mkdir -p results logs
+          g++ -O3 -std=c++17 -I/usr/include src/probe_specific_modulus.cpp -o probe_modulus \
+            2>&1 | tee logs/build_single_modulus.log
+
+      - name: Run with nonzero-weight examples
+        run: |
+          mkdir -p results logs
+          ./probe_modulus \
+            --M-min "${{ github.event.inputs.M_min }}" \
+            --M-max "${{ github.event.inputs.M_max }}" \
+            --modulus "${{ github.event.inputs.modulus }}" \
+            --prefix "results/mod${{ github.event.inputs.modulus }}_M${{ github.event.inputs.M_min }}_${{ github.event.inputs.M_max }}" \
+            2>&1 | tee logs/single_modulus.log
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mod${{ github.event.inputs.modulus }}-examples-M${{ github.event.inputs.M_min }}-${{ github.event.inputs.M_max }}
+          path: |
+            results/*.csv
+            logs/**
+          retention-days: 30
+          if-no-files-found: warn

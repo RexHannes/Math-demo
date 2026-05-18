@@ -88,3 +88,29 @@ Suggested order:
 ```bash
 python3 scripts/summarize_modulus_probe.py artifacts
 ```
+
+## Multi-Moduli Scan
+
+The repo also now supports the broader GitHub Actions scan discussed for testing whether mod `33` is isolated or part of a larger composite-modulus pattern.
+
+- `.github/workflows/erdos_multi_moduli_regime_scan.yml`
+- `.github/workflows/erdos_single_modulus_examples.yml`
+- `scripts/summarize_multi_moduli.py`
+- `docs/multi_moduli_regime_scan.md`
+
+Recommended first run:
+
+```text
+M_min = 200
+M_max = 700
+moduli = 33 39 55 77 99 121 143 165 187 231 297 363
+keep_examples = false
+```
+
+Then summarize downloaded artifacts with:
+
+```bash
+python3 scripts/summarize_multi_moduli.py artifacts --min-len 20
+```
+
+Only if a modulus shows a promising full-block window should you run the single-modulus examples workflow for mechanism inspection.

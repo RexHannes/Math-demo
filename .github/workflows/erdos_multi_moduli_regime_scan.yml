@@ -1,0 +1,110 @@
+name: Erdős multi-moduli regime scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      M_min:
+        description: "Starting M"
+        required: true
+        default: "200"
+      M_max:
+        description: "Ending M"
+        required: true
+        default: "700"
+      moduli:
+        description: "Space-separated moduli to scan"
+        required: true
+        default: "33 39 55 77 99 121 143 165 187 231 297 363"
+      keep_examples:
+        description: "Keep nonzero-weight examples? true/false"
+        required: true
+        default: "false"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        chunk:
+          - { start: 200, end: 250 }
+          - { start: 251, end: 300 }
+          - { start: 301, end: 350 }
+          - { start: 351, end: 400 }
+          - { start: 401, end: 450 }
+          - { start: 451, end: 500 }
+          - { start: 501, end: 550 }
+          - { start: 551, end: 600 }
+          - { start: 601, end: 650 }
+          - { start: 651, end: 700 }
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ libboost-all-dev python3
+
+      - name: Verify toolchain and Boost headers
+        run: |
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          which g++
+          g++ --version
+          dpkg -s libboost-all-dev | sed -n '1,40p'
+          test -f /usr/include/boost/multiprecision/cpp_int.hpp
+          ls -l /usr/include/boost/multiprecision/cpp_int.hpp
+
+      - name: Build probe
+        run: |
+          mkdir -p results logs
+          g++ -O3 -std=c++17 -I/usr/include src/probe_specific_modulus.cpp -o probe_modulus \
+            2>&1 | tee logs/build_multi_moduli_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.log
+
+      - name: Run assigned chunk for all moduli
+        shell: bash
+        run: |
+          mkdir -p results logs
+          GLOBAL_MIN=${{ github.event.inputs.M_min }}
+          GLOBAL_MAX=${{ github.event.inputs.M_max }}
+          CHUNK_START=${{ matrix.chunk.start }}
+          CHUNK_END=${{ matrix.chunk.end }}
+          START=$(( CHUNK_START > GLOBAL_MIN ? CHUNK_START : GLOBAL_MIN ))
+          END=$(( CHUNK_END < GLOBAL_MAX ? CHUNK_END : GLOBAL_MAX ))
+
+          if [ "$START" -gt "$END" ]; then
+            echo "Chunk outside requested range; nothing to do." | tee -a logs/run_${CHUNK_START}_${CHUNK_END}.log
+            exit 0
+          fi
+
+          EXTRA="--no-examples"
+          if [ "${{ github.event.inputs.keep_examples }}" = "true" ]; then
+            EXTRA=""
+          fi
+
+          for R in ${{ github.event.inputs.moduli }}; do
+            echo "===== Running modulus $R for M=$START..$END =====" | tee -a logs/run_${START}_${END}.log
+            ./probe_modulus \
+              --M-min "$START" \
+              --M-max "$END" \
+              --modulus "$R" \
+              --prefix "results/mod${R}_M${START}_${END}" \
+              $EXTRA \
+              2>&1 | tee -a logs/run_${START}_${END}.log
+          done
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: multi-moduli-M${{ matrix.chunk.start }}-${{ matrix.chunk.end }}
+          path: |
+            results/*_summary_by_M.csv
+            results/*_reachable_records.csv
+            logs/**
+          retention-days: 30
+          if-no-files-found: warn
