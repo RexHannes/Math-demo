@@ -1,0 +1,146 @@
+name: Erdős 287 hyb cover chunks (C++)
+
+on:
+  workflow_dispatch:
+    inputs:
+      N:
+        description: "Maximum denominator N"
+        required: true
+        default: "70"
+      P:
+        description: "Maximum prime modulus P"
+        required: true
+        default: "70"
+      low:
+        description: "Near-sum lower bound"
+        required: true
+        default: "0.999"
+      high:
+        description: "Near-sum upper bound"
+        required: true
+        default: "1.001"
+      shell_timeout_minutes:
+        description: "Shell timeout before artifact upload"
+        required: true
+        default: "75"
+      progress_every:
+        description: "Heartbeat interval in visited nodes"
+        required: true
+        default: "10000000"
+
+jobs:
+  cover-hyb-chunk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk:
+          - { start: 2, end: 10 }
+          - { start: 11, end: 20 }
+          - { start: 21, end: 30 }
+          - { start: 31, end: 40 }
+          - { start: 41, end: 50 }
+          - { start: 51, end: 70 }
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Show runner info
+        run: |
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          g++ --version
+
+      - name: Compile C++ hyb scanner
+        run: |
+          set -o pipefail
+          mkdir -p build results logs
+          g++ -O3 -std=c++20 scripts/erdos287_cover.cpp -o build/erdos287_cover_hyb \
+            2>&1 | tee logs/erdos287_cover_hyb_build_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.log
+
+      - name: Run C++ hyb chunk
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p results logs
+          chunk_suffix="S${{ matrix.chunk.start }}_${{ matrix.chunk.end }}"
+          out_path="results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_hyb_cpp.json"
+          progress_path="results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_hyb_cpp_progress.json"
+          cat > "$out_path" <<EOF
+          {
+            "generated_at": "$(date +%s)",
+            "completed": false,
+            "interrupted": false,
+            "runs": []
+          }
+          EOF
+          cat > "$progress_path" <<EOF
+          {
+            "completed": false,
+            "N": ${{ github.event.inputs.N }},
+            "P": ${{ github.event.inputs.P }},
+            "start_min": ${{ matrix.chunk.start }},
+            "start_max": ${{ matrix.chunk.end }},
+            "nodes": 0,
+            "near_count": 0
+          }
+          EOF
+          stdbuf -oL -eL timeout --signal=TERM --kill-after=120s "${{ github.event.inputs.shell_timeout_minutes }}m" ./build/erdos287_cover_hyb \
+            --N "${{ github.event.inputs.N }}" \
+            --P "${{ github.event.inputs.P }}" \
+            --low "${{ github.event.inputs.low }}" \
+            --high "${{ github.event.inputs.high }}" \
+            --start-min "${{ matrix.chunk.start }}" \
+            --start-max "${{ matrix.chunk.end }}" \
+            --progress-every "${{ github.event.inputs.progress_every }}" \
+            --progress-out "$progress_path" \
+            --out "$out_path" \
+            2>&1 | tee logs/erdos287_cover_hyb_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.log
+
+      - name: Upload chunk results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: erdos287-cover-hyb-cpp-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S${{ matrix.chunk.start }}-${{ matrix.chunk.end }}
+          path: |
+            results/**
+            logs/**
+          retention-days: 30
+          if-no-files-found: warn
+
+  merge-hyb-chunks:
+    runs-on: ubuntu-latest
+    needs: cover-hyb-chunk
+    if: always()
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Download chunk artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: erdos287-cover-hyb-cpp-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S*
+          merge-multiple: true
+
+      - name: Merge chunk masks
+        run: |
+          mkdir -p results
+          python3 scripts/merge_hyb_cover_chunks.py artifacts --out results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_hyb_cpp_merged.json \
+            2>&1 | tee results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_hyb_cpp_merged.log
+
+      - name: Upload merged result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: erdos287-cover-hyb-cpp-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-merged
+          path: results/**
+          retention-days: 30
+          if-no-files-found: warn
