@@ -144,6 +144,7 @@ Operational note: the Python workflow now emits progress heartbeats, writes prog
 For heavier `hyb` runs, the repo also includes:
 
 - `src/erdos287_cover_hyb.cpp`
+- `scripts/erdos287_cover.cpp`
 - `.github/workflows/erdos287-cover-hyb-cpp.yml`
 
 This C++ path avoids the Python brute-force overhead and is the better next move for jobs like:
@@ -152,3 +153,13 @@ This C++ path avoids the Python brute-force overhead and is the better next move
 - `N = 60, P = 60, low = 0.999, high = 1.001`
 
 It still uses the same gap-2 enumeration idea, so it is not a magic cure for exponential growth, but it should be much more practical for the next round of `hyb` experiments.
+
+Local compile/run shape:
+
+```bash
+g++ -O3 -std=c++20 scripts/erdos287_cover.cpp -o erdos287_cover
+./erdos287_cover --N 60 --P 60 --low 0.999 --high 1.001 --out results/N60_P60_hyb_cpp.json
+./erdos287_cover --N 60 --P 60 --low 0.99 --high 1.01 --out results/N60_P60_hyb_cpp_wide.json
+```
+
+The executable currently uses flag-based arguments rather than positional arguments, which keeps it aligned with the GitHub Action and progress-output support.

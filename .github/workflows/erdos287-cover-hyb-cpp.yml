@@ -47,7 +47,7 @@ jobs:
       - name: Compile C++ hyb scanner
         run: |
           mkdir -p build results logs
-          g++ -O3 -std=c++20 src/erdos287_cover_hyb.cpp -o build/erdos287_cover_hyb \
+          g++ -O3 -std=c++20 scripts/erdos287_cover.cpp -o build/erdos287_cover_hyb \
             2>&1 | tee logs/erdos287_cover_hyb_build.log
 
       - name: Run C++ hyb computation
