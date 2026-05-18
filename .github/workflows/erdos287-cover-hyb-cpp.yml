@@ -19,6 +19,14 @@ on:
         description: "Near-sum upper bound"
         required: true
         default: "1.01"
+      start_min:
+        description: "Minimum starting denominator for this chunk"
+        required: true
+        default: "2"
+      start_max:
+        description: "Maximum starting denominator for this chunk (0 means N)"
+        required: true
+        default: "0"
       shell_timeout_minutes:
         description: "Shell timeout before artifact upload"
         required: true
@@ -56,8 +64,9 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p results logs
-          out_path="results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_hyb_cpp.json"
-          progress_path="results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_hyb_cpp_progress.json"
+          chunk_suffix="S${{ github.event.inputs.start_min }}_${{ github.event.inputs.start_max }}"
+          out_path="results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_hyb_cpp.json"
+          progress_path="results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_hyb_cpp_progress.json"
           cat > "$out_path" <<EOF
           {
             "generated_at": "$(date +%s)",
@@ -71,6 +80,8 @@ jobs:
             "completed": false,
             "N": ${{ github.event.inputs.N }},
             "P": ${{ github.event.inputs.P }},
+            "start_min": ${{ github.event.inputs.start_min }},
+            "start_max": ${{ github.event.inputs.start_max }},
             "nodes": 0,
             "near_count": 0
           }
@@ -80,6 +91,8 @@ jobs:
             --P "${{ github.event.inputs.P }}" \
             --low "${{ github.event.inputs.low }}" \
             --high "${{ github.event.inputs.high }}" \
+            --start-min "${{ github.event.inputs.start_min }}" \
+            --start-max "${{ github.event.inputs.start_max }}" \
             --progress-every "${{ github.event.inputs.progress_every }}" \
             --progress-out "$progress_path" \
             --out "$out_path" \
@@ -89,7 +102,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: erdos287-cover-hyb-cpp-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}
+          name: erdos287-cover-hyb-cpp-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S${{ github.event.inputs.start_min }}-${{ github.event.inputs.start_max }}
           path: |
             results/**
             logs/**

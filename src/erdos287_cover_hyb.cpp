@@ -149,6 +149,8 @@ struct RunConfig {
     int P = 60;
     double low = 0.999;
     double high = 1.001;
+    int start_min = 2;
+    int start_max = 0;
     string out_path;
     string progress_path;
     uint64_t progress_every = 10000000;
@@ -171,6 +173,7 @@ struct RunResult {
     vector<vector<string>> minimal_covers_sample;
     vector<int> first_uncovered;
     vector<pair<uint64_t, uint64_t>> top_masks;
+    vector<pair<uint64_t, uint64_t>> unique_masks;
     vector<CandidateSample> samples;
     double seconds = 0.0;
 };
@@ -202,12 +205,15 @@ static void write_partial_result_json(const RunConfig& config,
                                       const vector<string>& tests,
                                       const ProgressState& progress,
                                       const vector<CandidateSample>& samples,
-                                      uint64_t unique_mask_count,
+                                      const unordered_map<uint64_t, uint64_t>& unique_masks,
                                       const string& out_path,
                                       double seconds,
                                       bool interrupted,
                                       int checkpoint_last,
                                       double checkpoint_sum) {
+    vector<pair<uint64_t, uint64_t>> sorted_unique_masks(unique_masks.begin(), unique_masks.end());
+    sort(sorted_unique_masks.begin(), sorted_unique_masks.end());
+
     write_json_atomically(out_path, [&](ostream& out) {
         out << "{\n";
         out << "  \"generated_at\": \"" << time(nullptr) << "\",\n";
@@ -220,6 +226,8 @@ static void write_partial_result_json(const RunConfig& config,
         out << "      \"P\": " << config.P << ",\n";
         out << "      \"low\": " << config.low << ",\n";
         out << "      \"high\": " << config.high << ",\n";
+        out << "      \"start_min\": " << config.start_min << ",\n";
+        out << "      \"start_max\": " << (config.start_max > 0 ? config.start_max : config.N) << ",\n";
         out << "      \"test_count\": " << tests.size() << ",\n";
         out << "      \"tests\": [";
         for (size_t i = 0; i < tests.size(); ++i) {
@@ -231,7 +239,14 @@ static void write_partial_result_json(const RunConfig& config,
         out << "      \"near_count\": " << progress.near_count << ",\n";
         out << "      \"exact_hit_count\": null,\n";
         out << "      \"exact_hits_sample\": [],\n";
-        out << "      \"unique_mask_count\": " << unique_mask_count << ",\n";
+        out << "      \"unique_mask_count\": " << sorted_unique_masks.size() << ",\n";
+        out << "      \"unique_masks\": {";
+        for (size_t i = 0; i < sorted_unique_masks.size(); ++i) {
+            const auto& [mask, count] = sorted_unique_masks[i];
+            if (i) out << ", ";
+            out << '"' << mask << "\": " << count;
+        }
+        out << "},\n";
         out << "      \"minimal_cover_size\": null,\n";
         out << "      \"minimal_covers_sample\": [],\n";
         out << "      \"first_uncovered\": ";
@@ -323,7 +338,7 @@ static RunResult run_cover_hyb(const RunConfig& config) {
             labels,
             progress,
             samples,
-            static_cast<uint64_t>(unique_masks.size()),
+            unique_masks,
             config.out_path,
             elapsed,
             interrupted,
@@ -430,7 +445,9 @@ static RunResult run_cover_hyb(const RunConfig& config) {
             }
         };
 
-    for (int start = 2; start <= config.N; ++start) {
+    int start_min = max(2, config.start_min);
+    int start_max = config.start_max > 0 ? min(config.N, config.start_max) : config.N;
+    for (int start = start_min; start <= start_max; ++start) {
         if (stop_requested()) break;
         vector<int> next_max_v = current_max_v;
         vector<int> next_top_sum = current_top_sum;
@@ -461,6 +478,8 @@ static RunResult run_cover_hyb(const RunConfig& config) {
         result.nodes = progress.nodes;
         result.near_count = progress.near_count;
         result.unique_mask_count = static_cast<uint64_t>(unique_masks.size());
+        result.unique_masks.assign(unique_masks.begin(), unique_masks.end());
+        sort(result.unique_masks.begin(), result.unique_masks.end());
         result.first_uncovered = progress.first_uncovered;
         result.samples = samples;
         result.seconds = chrono::duration<double>(chrono::steady_clock::now() - started).count();
@@ -490,6 +509,8 @@ static RunResult run_cover_hyb(const RunConfig& config) {
     result.nodes = progress.nodes;
     result.near_count = progress.near_count;
     result.unique_mask_count = static_cast<uint64_t>(unique_masks.size());
+    result.unique_masks.assign(unique_masks.begin(), unique_masks.end());
+    sort(result.unique_masks.begin(), result.unique_masks.end());
     result.minimal_cover_size = min_cover_size;
     for (uint64_t mask : cover_masks) result.minimal_covers_sample.push_back(bits_to_labels(mask, labels));
     result.first_uncovered = progress.first_uncovered;
@@ -524,6 +545,13 @@ static void write_result_json(const RunResult& result, const string& out_path) {
         out << "      \"exact_hit_count\": null,\n";
         out << "      \"exact_hits_sample\": [],\n";
         out << "      \"unique_mask_count\": " << result.unique_mask_count << ",\n";
+        out << "      \"unique_masks\": {";
+        for (size_t i = 0; i < result.unique_masks.size(); ++i) {
+            const auto& [mask, count] = result.unique_masks[i];
+            if (i) out << ", ";
+            out << '"' << mask << "\": " << count;
+        }
+        out << "},\n";
         out << "      \"minimal_cover_size\": " << result.minimal_cover_size << ",\n";
         out << "      \"minimal_covers_sample\": [";
         for (size_t i = 0; i < result.minimal_covers_sample.size(); ++i) {
@@ -599,6 +627,8 @@ int main(int argc, char** argv) {
         else if (arg == "--P") config.P = stoi(next());
         else if (arg == "--low") config.low = stod(next());
         else if (arg == "--high") config.high = stod(next());
+        else if (arg == "--start-min") config.start_min = stoi(next());
+        else if (arg == "--start-max") config.start_max = stoi(next());
         else if (arg == "--out") config.out_path = next();
         else if (arg == "--progress-out") config.progress_path = next();
         else if (arg == "--progress-every") config.progress_every = stoull(next());
