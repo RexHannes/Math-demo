@@ -136,3 +136,19 @@ python3 scripts/erdos287_cover.py --N 70 --P 70 --mode both --out results/N70_P7
 ```
 
 For GitHub Actions, run `Erdős 287 cover tests` with modest values first, then scale up to `N=90` only after the smaller jobs finish cleanly.
+
+Operational note: the Python workflow now emits progress heartbeats, writes progress snapshots into `results/`, defaults to `hyb`, and uses a shell timeout so logs and partial outputs can still upload even when the full computation is too slow.
+
+## Faster C++ Hybrid Cover
+
+For heavier `hyb` runs, the repo also includes:
+
+- `src/erdos287_cover_hyb.cpp`
+- `.github/workflows/erdos287-cover-hyb-cpp.yml`
+
+This C++ path avoids the Python brute-force overhead and is the better next move for jobs like:
+
+- `N = 55, P = 55, low = 0.99, high = 1.01`
+- `N = 60, P = 60, low = 0.999, high = 1.001`
+
+It still uses the same gap-2 enumeration idea, so it is not a magic cure for exponential growth, but it should be much more practical for the next round of `hyb` experiments.

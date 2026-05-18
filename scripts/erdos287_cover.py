@@ -5,8 +5,9 @@ import argparse
 import itertools
 import json
 import math
+from pathlib import Path
 import time
-from typing import Dict, List, Sequence, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 
 def primes_upto(n: int) -> List[int]:
@@ -88,12 +89,22 @@ def bits_to_labels(mask: int, labels: Sequence[str]) -> List[str]:
     return [labels[i] for i in range(len(labels)) if (mask >> i) & 1]
 
 
+def write_progress_snapshot(progress_out: str | None, payload: Dict) -> None:
+    if not progress_out:
+        return
+    path = Path(progress_out)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def enumerate_gap2_near(
     N: int,
     low: float,
     high: float,
     test_moduli: Sequence[int],
     sample_limit: int = 5,
+    progress_every: int = 0,
+    progress_callback: Callable[[Dict], None] | None = None,
 ) -> Dict:
     suffix = suffix_harmonic_float(N)
     nodes = 0
@@ -107,6 +118,24 @@ def enumerate_gap2_near(
     def visit(S: List[int], last: int, current_sum: float) -> None:
         nonlocal nodes, near_count, first_uncovered
         nodes += 1
+
+        if progress_every and nodes % progress_every == 0:
+            payload = {
+                "N": N,
+                "nodes": nodes,
+                "near_count": near_count,
+                "last": last,
+                "sum_float": current_sum,
+                "elapsed_seconds": time.time() - started,
+                "first_uncovered": first_uncovered,
+            }
+            print(
+                f"progress N={N}: nodes={nodes:,}, near={near_count:,}, "
+                f"last={last}, sum={current_sum:.8f}",
+                flush=True,
+            )
+            if progress_callback:
+                progress_callback(payload)
 
         if current_sum > high:
             return
@@ -170,7 +199,14 @@ def run_one(N: int, low: float, high: float, P: int, mode: str) -> Dict:
     else:
         raise ValueError("mode must be hyb or lift")
 
-    result = enumerate_gap2_near(N, low, high, test_moduli)
+    result = enumerate_gap2_near(
+        N,
+        low,
+        high,
+        test_moduli,
+        progress_every=run_one.progress_every,
+        progress_callback=run_one.progress_callback,
+    )
     unique_masks = list(result["unique_masks"].keys())
     min_size, cover_masks = minimal_hitting_sets(unique_masks, len(test_moduli))
     cover_labels = [bits_to_labels(mask, labels) for mask in cover_masks]
@@ -224,6 +260,8 @@ def main() -> None:
     parser.add_argument("--high", type=float, default=1.01)
     parser.add_argument("--mode", choices=["hyb", "lift", "both"], default="both")
     parser.add_argument("--out", type=str, default=None)
+    parser.add_argument("--progress-every", type=int, default=100_000)
+    parser.add_argument("--progress-out", type=str, default=None)
     args = parser.parse_args()
 
     P = args.P if args.P is not None else args.N
@@ -231,6 +269,24 @@ def main() -> None:
     outputs = []
 
     for mode in modes:
+        mode_progress_out = None
+        if args.progress_out:
+            base = Path(args.progress_out)
+            suffix = base.suffix or ".json"
+            if args.mode == "both":
+                mode_progress_out = str(base.with_name(f"{base.stem}_{mode}{suffix}"))
+            else:
+                mode_progress_out = str(base)
+
+        run_one.progress_every = args.progress_every
+        run_one.progress_callback = lambda payload, mode=mode, P=P, low=args.low, high=args.high, out=mode_progress_out: write_progress_snapshot(out, {
+            "mode": mode,
+            "P": P,
+            "low": low,
+            "high": high,
+            **payload,
+        })
+
         print(f"Running mode={mode}, N={args.N}, P={P}, window=[{args.low},{args.high}]")
         result = run_one(args.N, args.low, args.high, P, mode)
         outputs.append(result)
@@ -252,6 +308,26 @@ def main() -> None:
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "runs": outputs
     }
+
+    if args.progress_out:
+        write_progress_snapshot(args.progress_out, {
+            "generated_at": final["generated_at"],
+            "completed": True,
+            "runs": [
+                {
+                    "mode": run["mode"],
+                    "N": run["N"],
+                    "P": run["P"],
+                    "nodes": run["nodes"],
+                    "near_count": run["near_count"],
+                    "unique_mask_count": run["unique_mask_count"],
+                    "minimal_cover_size": run["minimal_cover_size"],
+                    "first_uncovered": run["first_uncovered"],
+                    "seconds": run["seconds"],
+                }
+                for run in outputs
+            ],
+        })
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as handle:

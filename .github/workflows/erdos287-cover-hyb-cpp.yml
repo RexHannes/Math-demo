@@ -1,4 +1,4 @@
-name: Erdős 287 cover tests
+name: Erdős 287 hyb cover tests (C++)
 
 on:
   workflow_dispatch:
@@ -6,11 +6,11 @@ on:
       N:
         description: "Maximum denominator N"
         required: true
-        default: "60"
+        default: "55"
       P:
-        description: "Maximum prime / prime-power modulus P"
+        description: "Maximum prime modulus P"
         required: true
-        default: "60"
+        default: "55"
       low:
         description: "Near-sum lower bound"
         required: true
@@ -19,10 +19,6 @@ on:
         description: "Near-sum upper bound"
         required: true
         default: "1.01"
-      mode:
-        description: "Cover mode: hyb, lift, or both"
-        required: true
-        default: "hyb"
       shell_timeout_minutes:
         description: "Shell timeout before artifact upload"
         required: true
@@ -33,9 +29,9 @@ on:
         default: "100000"
 
 jobs:
-  cover:
+  cover-hyb-cpp:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 90
     permissions:
       contents: read
 
@@ -43,36 +39,36 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
       - name: Show runner info
         run: |
           echo "GITHUB_SHA=$GITHUB_SHA"
-          python --version
+          g++ --version
 
-      - name: Run cover computation
+      - name: Compile C++ hyb scanner
+        run: |
+          mkdir -p build results logs
+          g++ -O3 -std=c++20 src/erdos287_cover_hyb.cpp -o build/erdos287_cover_hyb \
+            2>&1 | tee logs/erdos287_cover_hyb_build.log
+
+      - name: Run C++ hyb computation
         continue-on-error: true
         run: |
           mkdir -p results logs
-          stdbuf -oL -eL timeout "${{ github.event.inputs.shell_timeout_minutes }}m" python3 -u scripts/erdos287_cover.py \
+          stdbuf -oL -eL timeout "${{ github.event.inputs.shell_timeout_minutes }}m" ./build/erdos287_cover_hyb \
             --N "${{ github.event.inputs.N }}" \
             --P "${{ github.event.inputs.P }}" \
             --low "${{ github.event.inputs.low }}" \
             --high "${{ github.event.inputs.high }}" \
-            --mode "${{ github.event.inputs.mode }}" \
             --progress-every "${{ github.event.inputs.progress_every }}" \
-            --progress-out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${{ github.event.inputs.mode }}_progress.json" \
-            --out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${{ github.event.inputs.mode }}.json" \
-            2>&1 | tee logs/erdos287_cover.log
+            --progress-out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_hyb_cpp_progress.json" \
+            --out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_hyb_cpp.json" \
+            2>&1 | tee logs/erdos287_cover_hyb.log
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: erdos287-cover-results-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-${{ github.event.inputs.mode }}
+          name: erdos287-cover-hyb-cpp-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}
           path: |
             results/**
             logs/**
