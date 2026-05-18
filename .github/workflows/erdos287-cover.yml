@@ -1,0 +1,65 @@
+name: Erdős 287 cover tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      N:
+        description: "Maximum denominator N"
+        required: true
+        default: "60"
+      P:
+        description: "Maximum prime / prime-power modulus P"
+        required: true
+        default: "60"
+      low:
+        description: "Near-sum lower bound"
+        required: true
+        default: "0.99"
+      high:
+        description: "Near-sum upper bound"
+        required: true
+        default: "1.01"
+
+jobs:
+  cover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Show runner info
+        run: |
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          python --version
+
+      - name: Run cover computation
+        run: |
+          mkdir -p results logs
+          python scripts/erdos287_cover.py \
+            --N "${{ github.event.inputs.N }}" \
+            --P "${{ github.event.inputs.P }}" \
+            --low "${{ github.event.inputs.low }}" \
+            --high "${{ github.event.inputs.high }}" \
+            --mode both \
+            --out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}.json" \
+            2>&1 | tee logs/erdos287_cover.log
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: erdos287-cover-results-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}
+          path: |
+            results/*.json
+            logs/**
+          retention-days: 30
+          if-no-files-found: warn

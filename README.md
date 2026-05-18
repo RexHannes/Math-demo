@@ -114,3 +114,25 @@ python3 scripts/summarize_multi_moduli.py artifacts --min-len 20
 ```
 
 Only if a modulus shows a promising full-block window should you run the single-modulus examples workflow for mechanism inspection.
+
+## Hybrid / Lift Covers
+
+The repo also now includes a separate Python-based experiment for the stronger certificate hierarchy:
+
+- `scripts/erdos287_cover.py`
+- `.github/workflows/erdos287-cover.yml`
+
+This computes the near-candidate cover statistics for:
+
+- `C_hyb(N)`: prime-modulus hybrid cover
+- `C_lift(N)`: prime-power lifting cover
+
+Recommended order:
+
+```bash
+python3 scripts/erdos287_cover.py --N 50 --P 50 --mode both --out results/N50_P50.json
+python3 scripts/erdos287_cover.py --N 60 --P 60 --mode both --out results/N60_P60.json
+python3 scripts/erdos287_cover.py --N 70 --P 70 --mode both --out results/N70_P70.json
+```
+
+For GitHub Actions, run `Erdős 287 cover tests` with modest values first, then scale up to `N=90` only after the smaller jobs finish cleanly.
