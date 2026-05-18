@@ -22,7 +22,7 @@ on:
       shell_timeout_minutes:
         description: "Shell timeout before artifact upload"
         required: true
-        default: "75"
+        default: "330"
       progress_every:
         description: "Heartbeat interval in visited nodes"
         required: true
@@ -31,7 +31,7 @@ on:
 jobs:
   cover-hyb-chunk:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 360
     continue-on-error: true
     permissions:
       contents: read
