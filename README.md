@@ -228,10 +228,14 @@ That run is resumable by chunk and merges the per-chunk anomaly CSV files into:
 
 - `results/anomalies_N65_candidates.csv`
 - `results/anomaly_candidate_summary_N65.md`
+- `results/anomaly_candidate_verification.md`
 
 Completeness rule:
 
 - The full N65 candidate-level dump should contain `137` rows total: `68` for `2+31` and `69` for `19+37`.
+- The optimized N65 workflow builds the C++ scanner once, then runs productive starting denominators `2..30` as 29 independent chunks.
+- Each chunk emits a `.status.json` sidecar with completion state, parameters, candidate/anomaly counts, commit SHA, source SHA256, and compile flags.
 - The C++ dumper does not sample, cap, or deduplicate anomaly candidates.
-- If the merged CSV has fewer than `137` rows, the rerun was interrupted or one or more chunks did not finish.
+- If the merged CSV has fewer than `137` rows, or any required sidecar is missing/incomplete, the rerun was interrupted or one or more chunks did not finish.
 - `scripts/merge_anomaly_chunk_csvs.py` writes completeness checks and structural tables into `results/anomaly_candidate_summary_N65.md`.
+- `scripts/verify_anomaly_candidates.py` independently recomputes exact sums and verifies that escaped backbone primes are absent from each row's kill mask.

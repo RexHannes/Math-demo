@@ -29,8 +29,68 @@ on:
         default: "10000000"
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Show runner info
+        run: |
+          python3 --version
+          g++ --version
+
+      - name: Compile C++ hyb scanner
+        run: |
+          set -o pipefail
+          mkdir -p build logs
+          g++ -O3 -std=c++20 -DNDEBUG scripts/erdos287_cover.cpp -o build/erdos287_cover_hyb \
+            2>&1 | tee logs/erdos287_cover_hyb_build.log
+
+      - name: Record build info
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          sources = [Path("scripts/erdos287_cover.cpp"), Path("src/erdos287_cover_hyb.cpp")]
+          digest = hashlib.sha256()
+          for source in sources:
+              digest.update(source.as_posix().encode("utf-8"))
+              digest.update(b"\0")
+              digest.update(source.read_bytes())
+              digest.update(b"\0")
+          payload = {
+              "commit_sha": os.environ["GITHUB_SHA"],
+              "cpp_sha256": digest.hexdigest(),
+              "compiled_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+              "compile_flags": "-O3 -std=c++20 -DNDEBUG",
+              "sources": [str(source) for source in sources],
+          }
+          Path("build/build_info.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: erdos287-cover-hyb-binary-${{ github.run_id }}
+          path: |
+            build/erdos287_cover_hyb
+            build/build_info.json
+            logs/**
+          retention-days: 7
+          if-no-files-found: error
+
   anomaly-chunk:
     runs-on: ubuntu-latest
+    needs: build
     timeout-minutes: 240
     continue-on-error: true
     permissions:
@@ -69,57 +129,25 @@ jobs:
           - 28
           - 29
           - 30
-          - 31
-          - 32
-          - 33
-          - 34
-          - 35
-          - 36
-          - 37
-          - 38
-          - 39
-          - 40
-          - 41
-          - 42
-          - 43
-          - 44
-          - 45
-          - 46
-          - 47
-          - 48
-          - 49
-          - 50
-          - 51
-          - 52
-          - 53
-          - 54
-          - 55
-          - 56
-          - 57
-          - 58
-          - 59
-          - 60
-          - 61
-          - 62
-          - 63
-          - 64
-          - 65
 
     steps:
-      - name: Check out repo
-        uses: actions/checkout@v6
+      - name: Download C++ hyb scanner
+        uses: actions/download-artifact@v7
+        with:
+          name: erdos287-cover-hyb-binary-${{ github.run_id }}
+          path: build
 
-      - name: Show runner info
+      - name: Prepare binary
         run: |
-          python3 --version
-          g++ --version
-
-      - name: Compile C++ hyb scanner
-        run: |
-          set -o pipefail
-          mkdir -p build results logs
-          g++ -O3 -std=c++20 scripts/erdos287_cover.cpp -o build/erdos287_cover_hyb \
-            2>&1 | tee logs/erdos287_cover_hyb_build_${{ matrix.start }}_${{ matrix.start }}.log
+          mkdir -p results logs
+          chmod +x build/erdos287_cover_hyb
+          cp build/build_info.json results/build_info_S${{ matrix.start }}_${{ matrix.start }}.json
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          build_info = json.load(open("build/build_info.json", encoding="utf-8"))
+          print(f"CPP_SHA256={build_info['cpp_sha256']}")
+          print(f"COMPILE_FLAGS={build_info['compile_flags']}")
+          PY
 
       - name: Run anomaly chunk
         continue-on-error: true
@@ -141,7 +169,10 @@ jobs:
             --anomaly-summary "results/anomaly_candidate_summary_N65_${chunk_suffix}.md" \
             --chunk-status "results/anomalies_N65_candidates_${chunk_suffix}.status.json" \
             --chunk-id "${chunk_suffix}" \
-            --num-chunks "64" \
+            --commit-sha "${{ github.sha }}" \
+            --source-sha256 "${CPP_SHA256}" \
+            --compile-flags "${COMPILE_FLAGS}" \
+            --num-chunks "29" \
             2>&1 | tee "logs/anomaly_dump_${{ matrix.start }}_${{ matrix.start }}.log"
 
       - name: Upload chunk artifacts
@@ -179,9 +210,19 @@ jobs:
           python3 scripts/merge_anomaly_chunk_csvs.py artifacts \
             --out-csv results/anomalies_N65_candidates.csv \
             --out-summary results/anomaly_candidate_summary_N65.md \
-            --expected-chunk-count 64 \
+            --expected-chunk-count 29 \
             --require-complete \
             2>&1 | tee logs/merge_anomaly_chunks.log
+
+      - name: Verify merged anomaly candidates independently
+        run: |
+          mkdir -p results logs
+          python3 scripts/verify_anomaly_candidates.py results/anomalies_N65_candidates.csv \
+            --P "${{ github.event.inputs.P }}" \
+            --low "${{ github.event.inputs.low }}" \
+            --high "${{ github.event.inputs.high }}" \
+            --out-report results/anomaly_candidate_verification.md \
+            2>&1 | tee logs/verify_anomaly_candidates.log
 
       - name: Upload merged anomaly artifacts
         if: always()

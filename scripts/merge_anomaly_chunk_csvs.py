@@ -167,6 +167,9 @@ def write_summary(
     complete = len(rows) == total_expected and all(backbone_counts[key] == value for key, value in expected_counts.items())
     complete_status_count = sum(1 for status in statuses if status.get("status") == "complete")
     incomplete_statuses = [status for status in statuses if status.get("status") != "complete"]
+    commit_shas = {str(status.get("commit_sha", "")) for status in statuses if status.get("commit_sha")}
+    source_hashes = {str(status.get("cpp_sha256", "")) for status in statuses if status.get("cpp_sha256")}
+    compile_flags = {str(status.get("compile_flags", "")) for status in statuses if status.get("compile_flags")}
 
     lines = [
         "# N65 Anomaly Candidate Summary",
@@ -177,6 +180,9 @@ def write_summary(
         f"- chunk_status_files: `{len(statuses)}`",
         f"- expected_chunk_status_files: `{expected_chunk_count if expected_chunk_count is not None else 'not enforced'}`",
         f"- complete_chunk_status_files: `{complete_status_count}`",
+        f"- distinct_commit_shas: `{len(commit_shas)}`",
+        f"- distinct_cpp_sha256: `{len(source_hashes)}`",
+        f"- distinct_compile_flags: `{len(compile_flags)}`",
         "",
         "## Completeness",
         "",
@@ -388,6 +394,11 @@ def main() -> None:
             raise SystemExit(
                 f"Completeness required, but found {len(statuses)} status sidecars instead of {args.expected_chunk_count}"
             )
+        commit_shas = {str(status.get("commit_sha", "")) for status in statuses if status.get("commit_sha")}
+        source_hashes = {str(status.get("cpp_sha256", "")) for status in statuses if status.get("cpp_sha256")}
+        compile_flags = {str(status.get("compile_flags", "")) for status in statuses if status.get("compile_flags")}
+        if len(commit_shas) > 1 or len(source_hashes) > 1 or len(compile_flags) > 1:
+            raise SystemExit("Completeness required, but chunk build metadata is inconsistent")
         if incomplete_chunks:
             raise SystemExit("Completeness required, but one or more chunks are incomplete")
         if len(rows) != args.expected_total or not row_counts_ok:

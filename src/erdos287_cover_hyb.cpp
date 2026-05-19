@@ -383,6 +383,9 @@ struct RunConfig {
     string anomaly_summary_path;
     string chunk_status_path;
     string chunk_id;
+    string commit_sha;
+    string source_sha256;
+    string compile_flags;
     int num_chunks = 0;
     uint64_t progress_every = 10000000;
     int sample_limit = 5;
@@ -1019,6 +1022,9 @@ static void write_chunk_status(const RunConfig& config, const RunResult& result)
         out << "  \"high\": " << result.high << ",\n";
         out << "  \"chunk_id\": \"" << json_escape(config.chunk_id.empty() ? "S" + to_string(config.start_min) + "_" + to_string(config.start_max > 0 ? config.start_max : config.N) : config.chunk_id) << "\",\n";
         out << "  \"num_chunks\": " << config.num_chunks << ",\n";
+        out << "  \"commit_sha\": \"" << json_escape(config.commit_sha) << "\",\n";
+        out << "  \"cpp_sha256\": \"" << json_escape(config.source_sha256) << "\",\n";
+        out << "  \"compile_flags\": \"" << json_escape(config.compile_flags) << "\",\n";
         out << "  \"start_min\": " << config.start_min << ",\n";
         out << "  \"start_max\": " << (config.start_max > 0 ? config.start_max : config.N) << ",\n";
         out << "  \"status\": \"" << (result.completed ? "complete" : "incomplete") << "\",\n";
@@ -1060,6 +1066,9 @@ int main(int argc, char** argv) {
         else if (arg == "--anomaly-summary") config.anomaly_summary_path = next();
         else if (arg == "--chunk-status") config.chunk_status_path = next();
         else if (arg == "--chunk-id") config.chunk_id = next();
+        else if (arg == "--commit-sha") config.commit_sha = next();
+        else if (arg == "--source-sha256") config.source_sha256 = next();
+        else if (arg == "--compile-flags") config.compile_flags = next();
         else if (arg == "--num-chunks") config.num_chunks = stoi(next());
     }
 

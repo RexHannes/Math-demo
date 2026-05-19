@@ -180,3 +180,41 @@ def test_merge_anomaly_chunk_csvs(tmp_path: Path) -> None:
     assert "complete_chunk_status_files: `2`" in summary
     assert "`2+31`: `1`" in summary
     assert "`19+37`: `1`" in summary
+
+
+def test_verify_anomaly_candidates(tmp_path: Path) -> None:
+    csv_path = tmp_path / "anomalies.csv"
+    csv_path.write_text(
+        "candidate_id,escaped_backbone,denominators,kill_mask\n"
+        "1,2+31,2;3;6,0\n"
+        "2,19+37,2;3;6,0\n",
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "verification.md"
+    subprocess.run(
+        [
+            "python3",
+            str(Path(__file__).resolve().parents[1] / "scripts" / "verify_anomaly_candidates.py"),
+            str(csv_path),
+            "--P",
+            "65",
+            "--low",
+            "999/1000",
+            "--high",
+            "1001/1000",
+            "--out-report",
+            str(report_path),
+            "--expected-total",
+            "2",
+            "--expected-backbone-count",
+            "2+31=1",
+            "--expected-backbone-count",
+            "19+37=1",
+        ],
+        check=True,
+    )
+
+    report = report_path.read_text(encoding="utf-8")
+    assert "errors: `0`" in report
+    assert "`2+31`: `1` / `1`" in report
+    assert "`19+37`: `1` / `1`" in report
