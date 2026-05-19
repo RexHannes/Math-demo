@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <csignal>
 #include <cmath>
@@ -17,6 +18,7 @@
 #include <vector>
 
 using namespace std;
+using i128 = __int128_t;
 
 static volatile sig_atomic_t g_stop_requested = 0;
 
@@ -46,6 +48,25 @@ struct CandidateSample {
     vector<int> S;
     double sum_float;
     uint64_t kill_mask;
+};
+
+struct MonitoredPrimeSnapshot {
+    int prime = 0;
+    int max_valuation = 0;
+    int residue_sum_mod_p = 0;
+    vector<int> top_denominators;
+};
+
+struct AnomalyRecord {
+    uint64_t candidate_id = 0;
+    vector<string> escaped_backbones;
+    vector<int> S;
+    double sum_float = 0.0;
+    string exact_sum;
+    string sum_minus_one;
+    uint64_t kill_mask = 0;
+    vector<string> kill_primes;
+    vector<MonitoredPrimeSnapshot> snapshots;
 };
 
 struct ProgressState {
@@ -108,6 +129,211 @@ static vector<string> bits_to_labels(uint64_t mask, const vector<string>& labels
     return out;
 }
 
+static string join_strings(const vector<string>& values, const string& separator) {
+    ostringstream out;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i) out << separator;
+        out << values[i];
+    }
+    return out.str();
+}
+
+static string join_ints(const vector<int>& values, const string& separator) {
+    ostringstream out;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i) out << separator;
+        out << values[i];
+    }
+    return out.str();
+}
+
+static string csv_escape(const string& value) {
+    bool needs_quotes = value.find_first_of(",\"\n") != string::npos;
+    if (!needs_quotes) return value;
+    string escaped = "\"";
+    for (char c : value) {
+        if (c == '"') escaped += "\"\"";
+        else escaped += c;
+    }
+    escaped += "\"";
+    return escaped;
+}
+
+static i128 i128_abs(i128 value) {
+    return value < 0 ? -value : value;
+}
+
+static i128 i128_gcd(i128 left, i128 right) {
+    left = i128_abs(left);
+    right = i128_abs(right);
+    while (right != 0) {
+        i128 next = left % right;
+        left = right;
+        right = next;
+    }
+    return left;
+}
+
+static i128 i128_pow_int(int base, int exp) {
+    i128 value = 1;
+    for (int i = 0; i < exp; ++i) value *= base;
+    return value;
+}
+
+static string i128_to_string(i128 value) {
+    if (value == 0) return "0";
+    bool negative = value < 0;
+    i128 current = negative ? -value : value;
+    string out;
+    while (current > 0) {
+        int digit = static_cast<int>(current % 10);
+        out.push_back(static_cast<char>('0' + digit));
+        current /= 10;
+    }
+    if (negative) out.push_back('-');
+    reverse(out.begin(), out.end());
+    return out;
+}
+
+static pair<string, string> exact_sum_strings(const vector<int>& denominators) {
+    int max_denominator = 0;
+    for (int denominator : denominators) max_denominator = max(max_denominator, denominator);
+    vector<int> primes = primes_upto(max_denominator);
+    vector<int> max_exponents(primes.size(), 0);
+    for (int denominator : denominators) {
+        int value = denominator;
+        for (size_t i = 0; i < primes.size(); ++i) {
+            int prime = primes[i];
+            int exponent = 0;
+            while (value % prime == 0) {
+                value /= prime;
+                exponent += 1;
+            }
+            if (exponent > max_exponents[i]) max_exponents[i] = exponent;
+            if (value == 1) break;
+        }
+    }
+
+    i128 lcm = 1;
+    for (size_t i = 0; i < primes.size(); ++i) {
+        if (max_exponents[i] > 0) lcm *= i128_pow_int(primes[i], max_exponents[i]);
+    }
+
+    i128 sum_numerator = 0;
+    for (int denominator : denominators) sum_numerator += lcm / denominator;
+    i128 delta_numerator = sum_numerator - lcm;
+
+    i128 sum_gcd = i128_gcd(sum_numerator, lcm);
+    i128 delta_gcd = i128_gcd(delta_numerator, lcm);
+    return {
+        i128_to_string(sum_numerator / sum_gcd) + "/" + i128_to_string(lcm / sum_gcd),
+        i128_to_string(delta_numerator / delta_gcd) + "/" + i128_to_string(lcm / delta_gcd),
+    };
+}
+
+static int prime_valuation(int denominator, int prime) {
+    int value = denominator;
+    int valuation = 0;
+    while (value % prime == 0) {
+        value /= prime;
+        valuation += 1;
+    }
+    return valuation;
+}
+
+static MonitoredPrimeSnapshot build_prime_snapshot(const vector<int>& denominators, int prime) {
+    MonitoredPrimeSnapshot snapshot;
+    snapshot.prime = prime;
+    for (int denominator : denominators) {
+        snapshot.max_valuation = max(snapshot.max_valuation, prime_valuation(denominator, prime));
+    }
+    int residue_sum = 0;
+    for (int denominator : denominators) {
+        int valuation = prime_valuation(denominator, prime);
+        if (valuation != snapshot.max_valuation) continue;
+        snapshot.top_denominators.push_back(denominator);
+        int reduced = denominator;
+        for (int i = 0; i < valuation; ++i) reduced /= prime;
+        residue_sum = (residue_sum + mod_inverse_prime(reduced, prime)) % prime;
+    }
+    snapshot.residue_sum_mod_p = residue_sum;
+    return snapshot;
+}
+
+static vector<int> gap_pattern(const vector<int>& denominators) {
+    vector<int> gaps;
+    for (size_t i = 1; i < denominators.size(); ++i) gaps.push_back(denominators[i] - denominators[i - 1]);
+    return gaps;
+}
+
+static bool contains_pair(const vector<int>& denominators, int left, int right) {
+    bool seen_left = false;
+    bool seen_right = false;
+    for (int denominator : denominators) {
+        if (denominator == left) seen_left = true;
+        if (denominator == right) seen_right = true;
+    }
+    return seen_left && seen_right;
+}
+
+static bool contains_adjacent_factor_pair(const vector<int>& denominators) {
+    for (size_t i = 1; i < denominators.size(); ++i) {
+        int left = denominators[i - 1];
+        int right = denominators[i];
+        if (right % left == 0) return true;
+    }
+    return false;
+}
+
+struct BackboneCheck {
+    int left = 0;
+    int right = 0;
+    int left_index = -1;
+    int right_index = -1;
+};
+
+static string backbone_label(const BackboneCheck& backbone) {
+    return to_string(backbone.left) + "+" + to_string(backbone.right);
+}
+
+static vector<BackboneCheck> default_backbones(const vector<int>& primes) {
+    vector<BackboneCheck> out;
+    for (const auto& pair : array<pair<int, int>, 2>{pair<int, int>{2, 31}, pair<int, int>{19, 37}}) {
+        BackboneCheck backbone;
+        backbone.left = pair.first;
+        backbone.right = pair.second;
+        for (size_t i = 0; i < primes.size(); ++i) {
+            if (primes[i] == backbone.left) backbone.left_index = static_cast<int>(i);
+            if (primes[i] == backbone.right) backbone.right_index = static_cast<int>(i);
+        }
+        out.push_back(backbone);
+    }
+    return out;
+}
+
+static vector<string> escaping_backbones(uint64_t kill_mask, const vector<BackboneCheck>& backbones) {
+    vector<string> out;
+    for (const auto& backbone : backbones) {
+        if (backbone.left_index < 0 || backbone.right_index < 0) continue;
+        bool left_hit = ((kill_mask >> backbone.left_index) & 1ULL) != 0;
+        bool right_hit = ((kill_mask >> backbone.right_index) & 1ULL) != 0;
+        if (!left_hit && !right_hit) out.push_back(backbone_label(backbone));
+    }
+    return out;
+}
+
+static string covering_third_primes_string(const vector<string>& escaped_backbones, const vector<string>& kill_primes) {
+    vector<string> mappings;
+    string joined_primes = kill_primes.empty() ? "none" : join_strings(kill_primes, ";");
+    for (const auto& backbone : escaped_backbones) mappings.push_back(backbone + "->" + joined_primes);
+    return join_strings(mappings, "|");
+}
+
+static const vector<int>& monitored_primes() {
+    static const vector<int> primes{2, 13, 17, 19, 31, 37, 41, 47, 53, 59, 61};
+    return primes;
+}
+
 static pair<int, vector<uint64_t>> minimal_hitting_sets(const vector<uint64_t>& unique_masks, int num_tests, int max_solutions = 20) {
     if (unique_masks.empty()) return {0, {0}};
 
@@ -153,6 +379,8 @@ struct RunConfig {
     int start_max = 0;
     string out_path;
     string progress_path;
+    string anomalies_csv_path;
+    string anomaly_summary_path;
     uint64_t progress_every = 10000000;
     int sample_limit = 5;
 };
@@ -175,6 +403,7 @@ struct RunResult {
     vector<pair<uint64_t, uint64_t>> top_masks;
     vector<pair<uint64_t, uint64_t>> unique_masks;
     vector<CandidateSample> samples;
+    vector<AnomalyRecord> anomalies;
     double seconds = 0.0;
 };
 
@@ -291,9 +520,34 @@ static void write_partial_result_json(const RunConfig& config,
     });
 }
 
+static AnomalyRecord build_anomaly_record(uint64_t candidate_id,
+                                          const vector<int>& denominators,
+                                          double sum_float,
+                                          uint64_t kill_mask,
+                                          const vector<string>& kill_primes,
+                                          const vector<string>& escaped_backbones) {
+    AnomalyRecord record;
+    record.candidate_id = candidate_id;
+    record.escaped_backbones = escaped_backbones;
+    record.S = denominators;
+    record.sum_float = sum_float;
+    record.kill_mask = kill_mask;
+    record.kill_primes = kill_primes;
+    auto fractions = exact_sum_strings(denominators);
+    record.exact_sum = fractions.first;
+    record.sum_minus_one = fractions.second;
+
+    for (int prime : monitored_primes()) {
+        if (prime <= 1) continue;
+        record.snapshots.push_back(build_prime_snapshot(denominators, prime));
+    }
+    return record;
+}
+
 static RunResult run_cover_hyb(const RunConfig& config) {
     auto started = chrono::steady_clock::now();
     vector<int> primes = primes_upto(config.P);
+    vector<BackboneCheck> anomaly_backbones = default_backbones(primes);
     vector<string> labels;
     for (int p : primes) labels.push_back(to_string(p));
 
@@ -322,6 +576,7 @@ static RunResult run_cover_hyb(const RunConfig& config) {
         unique_masks.reserve(1ULL << 20);
     }
     vector<CandidateSample> samples;
+    vector<AnomalyRecord> anomalies;
     ProgressState progress;
     vector<int> current_set;
     vector<int> current_max_v(primes.size(), 0);
@@ -413,6 +668,7 @@ static RunResult run_cover_hyb(const RunConfig& config) {
                 }
 
                 unique_masks[kill_mask] += 1;
+                uint64_t candidate_id = progress.near_count + 1;
                 progress.near_count += 1;
 
                 if (kill_mask == 0 && progress.first_uncovered.empty()) {
@@ -421,6 +677,21 @@ static RunResult run_cover_hyb(const RunConfig& config) {
 
                 if (static_cast<int>(samples.size()) < config.sample_limit) {
                     samples.push_back({current_set, current_sum, kill_mask});
+                }
+
+                if (!config.anomalies_csv_path.empty()) {
+                    vector<string> escaped = escaping_backbones(kill_mask, anomaly_backbones);
+                    if (!escaped.empty()) {
+                        vector<string> kill_primes = bits_to_labels(kill_mask, labels);
+                        anomalies.push_back(build_anomaly_record(
+                            candidate_id,
+                            current_set,
+                            current_sum,
+                            kill_mask,
+                            kill_primes,
+                            escaped
+                        ));
+                    }
                 }
             }
 
@@ -482,6 +753,7 @@ static RunResult run_cover_hyb(const RunConfig& config) {
         sort(result.unique_masks.begin(), result.unique_masks.end());
         result.first_uncovered = progress.first_uncovered;
         result.samples = samples;
+        result.anomalies = anomalies;
         result.seconds = chrono::duration<double>(chrono::steady_clock::now() - started).count();
         return result;
     }
@@ -516,6 +788,7 @@ static RunResult run_cover_hyb(const RunConfig& config) {
     result.first_uncovered = progress.first_uncovered;
     result.top_masks = sorted_masks;
     result.samples = samples;
+    result.anomalies = anomalies;
     result.seconds = chrono::duration<double>(chrono::steady_clock::now() - started).count();
     return result;
 }
@@ -617,6 +890,100 @@ static void write_result_json(const RunResult& result, const string& out_path) {
     });
 }
 
+static void write_anomaly_outputs(const RunResult& result,
+                                  const string& csv_path,
+                                  const string& summary_path) {
+    if (csv_path.empty()) return;
+
+    write_json_atomically(csv_path, [&](ostream& out) {
+        out << "candidate_id,escaped_backbone,denominators,min_denominator,max_denominator,length,gap_pattern,exact_sum,sum_minus_1,kill_mask,kill_primes,kill_count,first_killing_prime,covering_third_primes,contains_37_38,contains_61_62,contains_adjacent_factor_pair";
+        for (int prime : monitored_primes()) {
+            out << ",valuation_profile_p" << prime << ",top_layer_residue_sum_p" << prime;
+        }
+        out << "\n";
+
+        for (const auto& record : result.anomalies) {
+            vector<int> gaps = gap_pattern(record.S);
+            vector<string> escaped = record.escaped_backbones;
+            vector<string> kill_primes = record.kill_primes;
+            string denominators = join_ints(record.S, ";");
+            string gap_text = join_ints(gaps, ";");
+            string escaped_text = join_strings(escaped, "|");
+            string kill_text = join_strings(kill_primes, ";");
+            string third_primes = covering_third_primes_string(escaped, kill_primes);
+            string first_killing_prime = kill_primes.empty() ? "" : kill_primes.front();
+
+            out << record.candidate_id
+                << "," << csv_escape(escaped_text)
+                << "," << csv_escape(denominators)
+                << "," << record.S.front()
+                << "," << record.S.back()
+                << "," << record.S.size()
+                << "," << csv_escape(gap_text)
+                << "," << csv_escape(record.exact_sum)
+                << "," << csv_escape(record.sum_minus_one)
+                << "," << record.kill_mask
+                << "," << csv_escape(kill_text)
+                << "," << kill_primes.size()
+                << "," << csv_escape(first_killing_prime)
+                << "," << csv_escape(third_primes)
+                << "," << (contains_pair(record.S, 37, 38) ? "true" : "false")
+                << "," << (contains_pair(record.S, 61, 62) ? "true" : "false")
+                << "," << (contains_adjacent_factor_pair(record.S) ? "true" : "false");
+
+            for (const auto& snapshot : record.snapshots) {
+                vector<string> profile_parts;
+                profile_parts.push_back("max=" + to_string(snapshot.max_valuation));
+                profile_parts.push_back("tops=" + join_ints(snapshot.top_denominators, ";"));
+                out << "," << csv_escape(join_strings(profile_parts, ";"))
+                    << "," << snapshot.residue_sum_mod_p;
+            }
+            out << "\n";
+        }
+    });
+
+    if (summary_path.empty()) return;
+    write_json_atomically(summary_path, [&](ostream& out) {
+        map<string, int> backbone_counts;
+        int contains_37_38 = 0;
+        int contains_61_62 = 0;
+        int adjacent_factor_pair = 0;
+
+        for (const auto& record : result.anomalies) {
+            for (const auto& backbone : record.escaped_backbones) backbone_counts[backbone] += 1;
+            if (contains_pair(record.S, 37, 38)) contains_37_38 += 1;
+            if (contains_pair(record.S, 61, 62)) contains_61_62 += 1;
+            if (contains_adjacent_factor_pair(record.S)) adjacent_factor_pair += 1;
+        }
+
+        out << "# Anomaly Candidate Summary\n\n";
+        out << "- completed: `" << (result.completed ? "true" : "false") << "`\n";
+        out << "- interrupted: `" << (result.interrupted ? "true" : "false") << "`\n";
+        out << "- anomaly_rows: `" << result.anomalies.size() << "`\n";
+        out << "- near_count: `" << result.near_count << "`\n";
+        out << "- output_csv: `" << csv_path << "`\n\n";
+        out << "## Escaped Backbones\n\n";
+        for (const auto& [backbone, count] : backbone_counts) {
+            out << "- `" << backbone << "`: `" << count << "`\n";
+        }
+        if (backbone_counts.empty()) out << "- none\n";
+        out << "\n## Structural Flags\n\n";
+        out << "- contains_37_38: `" << contains_37_38 << "`\n";
+        out << "- contains_61_62: `" << contains_61_62 << "`\n";
+        out << "- contains_adjacent_factor_pair: `" << adjacent_factor_pair << "`\n";
+        out << "\n## Sample Rows\n\n";
+        size_t sample_count = min<size_t>(5, result.anomalies.size());
+        for (size_t i = 0; i < sample_count; ++i) {
+            const auto& record = result.anomalies[i];
+            out << "- candidate `" << record.candidate_id << "` "
+                << "backbones=`" << join_strings(record.escaped_backbones, "|") << "` "
+                << "denominators=`" << join_ints(record.S, ",") << "` "
+                << "kill_primes=`" << join_strings(record.kill_primes, ",") << "` "
+                << "sum_minus_1=`" << record.sum_minus_one << "`\n";
+        }
+    });
+}
+
 int main(int argc, char** argv) {
     install_signal_handlers();
     RunConfig config;
@@ -632,6 +999,8 @@ int main(int argc, char** argv) {
         else if (arg == "--out") config.out_path = next();
         else if (arg == "--progress-out") config.progress_path = next();
         else if (arg == "--progress-every") config.progress_every = stoull(next());
+        else if (arg == "--dump-anomalies") config.anomalies_csv_path = next();
+        else if (arg == "--anomaly-summary") config.anomaly_summary_path = next();
     }
 
     if (config.out_path.empty()) {
@@ -646,6 +1015,9 @@ int main(int argc, char** argv) {
     RunResult result = run_cover_hyb(config);
     if (result.completed) {
         write_result_json(result, config.out_path);
+    }
+    if (!config.anomalies_csv_path.empty()) {
+        write_anomaly_outputs(result, config.anomalies_csv_path, config.anomaly_summary_path);
     }
 
     map<string, string> fields;
@@ -669,10 +1041,12 @@ int main(int argc, char** argv) {
          << "  \"nodes\": " << result.nodes << ",\n"
          << "  \"near_count\": " << result.near_count << ",\n"
          << "  \"unique_mask_count\": " << result.unique_mask_count << ",\n"
+         << "  \"anomaly_count\": " << result.anomalies.size() << ",\n"
          << "  \"minimal_cover_size\": " << (result.completed ? to_string(result.minimal_cover_size) : "null") << ",\n"
          << "  \"first_uncovered\": " << (result.first_uncovered.empty() ? "null" : "\"present\"") << ",\n"
          << "  \"seconds\": " << result.seconds << "\n"
          << "}\n";
     cerr << "Wrote " << config.out_path << "\n";
+    if (!config.anomalies_csv_path.empty()) cerr << "Wrote " << config.anomalies_csv_path << "\n";
     return 0;
 }

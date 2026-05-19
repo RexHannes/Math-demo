@@ -1,0 +1,131 @@
+name: Erdős 287 anomaly dump chunks
+
+on:
+  workflow_dispatch:
+    inputs:
+      N:
+        description: "Maximum denominator N"
+        required: true
+        default: "65"
+      P:
+        description: "Maximum prime modulus P"
+        required: true
+        default: "65"
+      low:
+        description: "Near-sum lower bound"
+        required: true
+        default: "0.999"
+      high:
+        description: "Near-sum upper bound"
+        required: true
+        default: "1.001"
+      shell_timeout_minutes:
+        description: "Shell timeout per chunk"
+        required: true
+        default: "120"
+      progress_every:
+        description: "Heartbeat interval in visited nodes"
+        required: true
+        default: "10000000"
+
+jobs:
+  anomaly-chunk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk:
+          - { start: 2, end: 10 }
+          - { start: 11, end: 20 }
+          - { start: 21, end: 30 }
+          - { start: 31, end: 40 }
+          - { start: 41, end: 50 }
+          - { start: 51, end: 65 }
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Show runner info
+        run: |
+          python3 --version
+          g++ --version
+
+      - name: Compile C++ hyb scanner
+        run: |
+          set -o pipefail
+          mkdir -p build results logs
+          g++ -O3 -std=c++20 scripts/erdos287_cover.cpp -o build/erdos287_cover_hyb \
+            2>&1 | tee logs/erdos287_cover_hyb_build_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.log
+
+      - name: Run anomaly chunk
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p results logs
+          chunk_suffix="S${{ matrix.chunk.start }}_${{ matrix.chunk.end }}"
+          timeout --signal=TERM --kill-after=120s "${{ github.event.inputs.shell_timeout_minutes }}m" ./build/erdos287_cover_hyb \
+            --N "${{ github.event.inputs.N }}" \
+            --P "${{ github.event.inputs.P }}" \
+            --low "${{ github.event.inputs.low }}" \
+            --high "${{ github.event.inputs.high }}" \
+            --start-min "${{ matrix.chunk.start }}" \
+            --start-max "${{ matrix.chunk.end }}" \
+            --progress-every "${{ github.event.inputs.progress_every }}" \
+            --progress-out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_anomaly_progress.json" \
+            --out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_anomaly_hyb_cpp.json" \
+            --dump-anomalies "results/anomalies_N65_candidates_${chunk_suffix}.csv" \
+            --anomaly-summary "results/anomaly_candidate_summary_N65_${chunk_suffix}.md" \
+            2>&1 | tee "logs/anomaly_dump_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.log"
+
+      - name: Upload chunk artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S${{ matrix.chunk.start }}-${{ matrix.chunk.end }}
+          path: |
+            results/**
+            logs/**
+          retention-days: 30
+          if-no-files-found: warn
+
+  merge-anomaly-chunks:
+    runs-on: ubuntu-latest
+    needs: anomaly-chunk
+    if: always()
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Download chunk artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S*
+          merge-multiple: true
+
+      - name: Merge chunk anomaly CSVs
+        run: |
+          mkdir -p results
+          python3 scripts/merge_anomaly_chunk_csvs.py artifacts \
+            --out-csv results/anomalies_N65_candidates.csv \
+            --out-summary results/anomaly_candidate_summary_N65.md \
+            2>&1 | tee logs/merge_anomaly_chunks.log
+
+      - name: Upload merged anomaly artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-merged
+          path: |
+            results/**
+            logs/**
+          retention-days: 30
+          if-no-files-found: warn

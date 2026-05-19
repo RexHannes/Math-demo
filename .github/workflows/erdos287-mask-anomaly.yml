@@ -1,0 +1,110 @@
+name: Erdős 287 mask anomaly verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_candidate_dump:
+        description: "Also rerun the C++ scanner and dump candidate-level anomalies"
+        required: true
+        type: boolean
+        default: false
+      N:
+        description: "Maximum denominator N for the optional rerun"
+        required: true
+        default: "65"
+      P:
+        description: "Maximum prime modulus P for the optional rerun"
+        required: true
+        default: "65"
+      low:
+        description: "Near-sum lower bound for the optional rerun"
+        required: true
+        default: "0.999"
+      high:
+        description: "Near-sum upper bound for the optional rerun"
+        required: true
+        default: "1.001"
+      shell_timeout_minutes:
+        description: "Shell timeout for the optional candidate dump"
+        required: true
+        default: "120"
+
+jobs:
+  verify-and-dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Show tool versions
+        run: |
+          python3 --version
+          g++ --version
+
+      - name: Check required input artifacts
+        run: |
+          test -f data/input/erdos287-cover-hyb-cpp-N65-P65-S2-0.zip
+          test -f data/input/N65_backbone_escaping_masks.csv
+          mkdir -p results logs build
+
+      - name: Run focused pytest suite
+        run: |
+          python3 -m pytest tests/test_mask_analysis.py
+
+      - name: Run N65 mask-level verification
+        run: |
+          python3 scripts/analyze_masks.py \
+            --input data/input/erdos287-cover-hyb-cpp-N65-P65-S2-0.zip \
+            --csv data/input/N65_backbone_escaping_masks.csv \
+            --expected-near-count 12152929604 \
+            --expected-unique-mask-count 11170 \
+            --expected-minimal-cover-size 3 \
+            --expected-escape-count 2,31=68 \
+            --expected-escape-count 19,37=69 \
+            --expect-all-two-prime-covers-fail \
+            --out-summary results/mask_anomaly_summary.md \
+            --out-witnesses results/minimality_witnesses.csv \
+            --out-log results/mask_verifier_log.txt \
+            2>&1 | tee logs/mask_analysis.log
+
+      - name: Compile C++ hyb scanner
+        if: ${{ inputs.run_candidate_dump }}
+        run: |
+          g++ -O3 -std=c++20 scripts/erdos287_cover.cpp -o build/erdos287_cover_hyb \
+            2>&1 | tee logs/erdos287_cover_hyb_build.log
+
+      - name: Run optional candidate-level anomaly dump
+        if: ${{ inputs.run_candidate_dump }}
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=120s "${{ inputs.shell_timeout_minutes }}m" ./build/erdos287_cover_hyb \
+            --N "${{ inputs.N }}" \
+            --P "${{ inputs.P }}" \
+            --low "${{ inputs.low }}" \
+            --high "${{ inputs.high }}" \
+            --out results/N${{ inputs.N }}_P${{ inputs.P }}_anomaly_dump_hyb_cpp.json \
+            --progress-out results/N${{ inputs.N }}_P${{ inputs.P }}_anomaly_dump_progress.json \
+            --dump-anomalies results/anomalies_N65_candidates.csv \
+            --anomaly-summary results/anomaly_candidate_summary.md \
+            2>&1 | tee logs/anomaly_dump.log
+
+      - name: Upload mask-analysis artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: erdos287-mask-anomaly-results
+          path: |
+            results/**
+            logs/**
+          retention-days: 30
+          if-no-files-found: warn

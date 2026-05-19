@@ -163,3 +163,75 @@ g++ -O3 -std=c++20 scripts/erdos287_cover.cpp -o erdos287_cover
 ```
 
 The executable currently uses flag-based arguments rather than positional arguments, which keeps it aligned with the GitHub Action and progress-output support.
+
+## Codex / artifact workflow
+
+For the N65 mask-anomaly follow-up, put uploaded ZIP/CSV artifacts under:
+
+```text
+data/input/
+```
+
+Recommended files:
+
+- `data/input/erdos287-cover-hyb-cpp-N65-P65-S2-0.zip`
+- `data/input/N65_backbone_escaping_masks.csv`
+- `data/input/erdos287-cover-hyb-cpp-N70-P70-merged.zip`
+- `data/input/erdos287-cover-hyb-cpp-N70-P70-merged (1).zip`
+
+Important clarification:
+
+- The C++ search source is already in this repo at `src/erdos287_cover_hyb.cpp` and `scripts/erdos287_cover.cpp`.
+- The ZIP artifacts are still useful, but they should be read from disk by scripts rather than pasted into a prompt.
+- With only the ZIP/CSV artifacts, Codex can verify mask-level anomaly counts.
+- Candidate-level anomaly structure requires a rerun with source code and a selective dump mode.
+
+Implementation commands after the files are present:
+
+```bash
+python3 -m pytest tests/test_mask_analysis.py
+
+python3 scripts/analyze_masks.py \
+  --input data/input/erdos287-cover-hyb-cpp-N65-P65-S2-0.zip \
+  --csv data/input/N65_backbone_escaping_masks.csv \
+  --expected-near-count 12152929604 \
+  --expected-unique-mask-count 11170 \
+  --expected-minimal-cover-size 3 \
+  --expected-escape-count 2,31=68 \
+  --expected-escape-count 19,37=69 \
+  --expect-all-two-prime-covers-fail
+
+g++ -O3 -std=c++20 scripts/erdos287_cover.cpp -o build/erdos287_cover_hyb
+./build/erdos287_cover_hyb \
+  --N 65 --P 65 --low 0.999 --high 1.001 \
+  --out results/N65_P65_anomaly_dump_hyb_cpp.json \
+  --progress-out results/N65_P65_anomaly_dump_progress.json \
+  --dump-anomalies results/anomalies_N65_candidates.csv \
+  --anomaly-summary results/anomaly_candidate_summary_N65.md
+```
+
+There is also a dedicated workflow:
+
+```text
+Erdős 287 mask anomaly verification
+```
+
+It runs the focused pytest suite, the mask-level verifier, and optionally the candidate-level anomaly dump.
+
+For the real Stage 2 rerun, prefer the chunked workflow:
+
+```text
+Erdős 287 anomaly dump chunks
+```
+
+That run is resumable by chunk and merges the per-chunk anomaly CSV files into:
+
+- `results/anomalies_N65_candidates.csv`
+- `results/anomaly_candidate_summary_N65.md`
+
+Completeness rule:
+
+- The full N65 candidate-level dump should contain `137` rows total: `68` for `2+31` and `69` for `19+37`.
+- The C++ dumper does not sample, cap, or deduplicate anomaly candidates.
+- If the merged CSV has fewer than `137` rows, the rerun was interrupted or one or more chunks did not finish.
+- `scripts/merge_anomaly_chunk_csvs.py` writes completeness checks and structural tables into `results/anomaly_candidate_summary_N65.md`.
