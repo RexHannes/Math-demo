@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -42,6 +43,22 @@ def load_rows(paths: list[Path]) -> tuple[list[dict[str, str]], list[str]]:
                 merged["candidate_id"] = f"{chunk_label}:{original_id}"
                 rows.append(merged)
     return rows, fieldnames
+
+
+def load_statuses(paths: list[Path]) -> list[dict[str, object]]:
+    statuses: list[dict[str, object]] = []
+    for path in sorted(paths):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            payload = {
+                "chunk_id": parse_chunk_label(path),
+                "status": "invalid",
+                "error": str(exc),
+            }
+        payload["source_status"] = str(path)
+        statuses.append(payload)
+    return statuses
 
 
 def write_csv(path: Path, rows: list[dict[str, str]], fieldnames: list[str]) -> None:
@@ -87,8 +104,10 @@ def counter_lines(counter: Counter, label: str, limit: int | None = None) -> lis
 def write_summary(
     path: Path,
     rows: list[dict[str, str]],
+    statuses: list[dict[str, object]],
     expected_counts: dict[str, int],
     expected_total: int | None,
+    expected_chunk_count: int | None,
     denominator_max: int,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,6 +165,8 @@ def write_summary(
 
     total_expected = expected_total if expected_total is not None else sum(expected_counts.values())
     complete = len(rows) == total_expected and all(backbone_counts[key] == value for key, value in expected_counts.items())
+    complete_status_count = sum(1 for status in statuses if status.get("status") == "complete")
+    incomplete_statuses = [status for status in statuses if status.get("status") != "complete"]
 
     lines = [
         "# N65 Anomaly Candidate Summary",
@@ -153,6 +174,9 @@ def write_summary(
         f"- anomaly_rows: `{len(rows)}`",
         f"- expected_rows: `{total_expected}`",
         f"- complete: `{yes_no(complete)}`",
+        f"- chunk_status_files: `{len(statuses)}`",
+        f"- expected_chunk_status_files: `{expected_chunk_count if expected_chunk_count is not None else 'not enforced'}`",
+        f"- complete_chunk_status_files: `{complete_status_count}`",
         "",
         "## Completeness",
         "",
@@ -160,6 +184,35 @@ def write_summary(
     ]
     for backbone, expected_count in sorted(expected_counts.items()):
         lines.append(f"- `{backbone}` rows: `{backbone_counts[backbone]}` / `{expected_count}`")
+
+    lines.extend([
+        "",
+        "## Chunk Status Sidecars",
+        "",
+    ])
+    if statuses:
+        for status in sorted(statuses, key=lambda item: str(item.get("chunk_id", ""))):
+            chunk_id = status.get("chunk_id", "unknown")
+            state = status.get("status", "unknown")
+            candidates = status.get("candidates_checked", "unknown")
+            exceptions = status.get("exceptions_found", "unknown")
+            lines.append(
+                f"- `{chunk_id}`: status=`{state}` candidates_checked=`{candidates}` exceptions_found=`{exceptions}`"
+            )
+    else:
+        lines.append("- none")
+
+    if incomplete_statuses:
+        lines.extend([
+            "",
+            "## Incomplete Or Invalid Chunks",
+            "",
+        ])
+        for status in sorted(incomplete_statuses, key=lambda item: str(item.get("chunk_id", ""))):
+            chunk_id = status.get("chunk_id", "unknown")
+            state = status.get("status", "unknown")
+            source = status.get("source_status", "")
+            lines.append(f"- `{chunk_id}`: `{state}` source=`{source}`")
 
     lines.extend([
         "",
@@ -284,27 +337,61 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Merge chunked anomaly CSV outputs into one resumable N65 candidate dump.")
     parser.add_argument("root", type=Path, help="Directory containing chunk CSVs")
     parser.add_argument("--pattern", default="anomalies_N65_candidates_*.csv")
+    parser.add_argument("--status-pattern", default="anomalies_N65_candidates_*.status.json")
     parser.add_argument("--out-csv", type=Path, default=Path("results/anomalies_N65_candidates.csv"))
     parser.add_argument("--out-summary", type=Path, default=Path("results/anomaly_candidate_summary_N65.md"))
     parser.add_argument("--expected-total", type=int, default=137)
     parser.add_argument("--expected-backbone-count", action="append", type=parse_expected_count, default=None)
+    parser.add_argument("--expected-chunk-count", type=int, default=None)
     parser.add_argument("--denominator-max", type=int, default=65)
+    parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args()
 
     paths = sorted(args.root.rglob(args.pattern))
     if not paths:
         raise SystemExit(f"No CSV files found under {args.root} matching {args.pattern}")
+    status_paths = sorted(args.root.rglob(args.status_pattern))
 
     rows, fieldnames = load_rows(paths)
+    statuses = load_statuses(status_paths)
     expected_counts = dict(args.expected_backbone_count or DEFAULT_EXPECTED_COUNTS.items())
     write_csv(args.out_csv, rows, fieldnames)
-    write_summary(args.out_summary, rows, expected_counts, args.expected_total, args.denominator_max)
+    write_summary(
+        args.out_summary,
+        rows,
+        statuses,
+        expected_counts,
+        args.expected_total,
+        args.expected_chunk_count,
+        args.denominator_max,
+    )
     print(f"Merged {len(paths)} files into {args.out_csv}")
+    print(f"Status sidecars: {len(statuses)}")
     print(f"Rows: {len(rows)}")
+    incomplete_chunks = [status for status in statuses if status.get("status") != "complete"]
+    if incomplete_chunks:
+        print("Incomplete chunks:")
+        for status in incomplete_chunks:
+            print(f"  {status.get('chunk_id', 'unknown')}: {status.get('status', 'unknown')}")
     for backbone, expected_count in sorted(expected_counts.items()):
         actual = sum(1 for row in rows if backbone in row_backbones(row))
         status = "ok" if actual == expected_count else "incomplete"
         print(f"{backbone}: {actual}/{expected_count} {status}")
+    row_counts_ok = all(
+        sum(1 for row in rows if backbone in row_backbones(row)) == expected_count
+        for backbone, expected_count in expected_counts.items()
+    )
+    if args.require_complete:
+        if not statuses:
+            raise SystemExit("Completeness required, but no chunk status sidecars were found")
+        if args.expected_chunk_count is not None and len(statuses) != args.expected_chunk_count:
+            raise SystemExit(
+                f"Completeness required, but found {len(statuses)} status sidecars instead of {args.expected_chunk_count}"
+            )
+        if incomplete_chunks:
+            raise SystemExit("Completeness required, but one or more chunks are incomplete")
+        if len(rows) != args.expected_total or not row_counts_ok:
+            raise SystemExit("Completeness required, but merged anomaly counts do not match expectations")
 
 
 if __name__ == "__main__":

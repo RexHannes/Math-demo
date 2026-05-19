@@ -22,7 +22,7 @@ on:
       shell_timeout_minutes:
         description: "Shell timeout per chunk"
         required: true
-        default: "120"
+        default: "180"
       progress_every:
         description: "Heartbeat interval in visited nodes"
         required: true
@@ -37,14 +37,73 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      max-parallel: 16
       matrix:
-        chunk:
-          - { start: 2, end: 10 }
-          - { start: 11, end: 20 }
-          - { start: 21, end: 30 }
-          - { start: 31, end: 40 }
-          - { start: 41, end: 50 }
-          - { start: 51, end: 65 }
+        start:
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+          - 8
+          - 9
+          - 10
+          - 11
+          - 12
+          - 13
+          - 14
+          - 15
+          - 16
+          - 17
+          - 18
+          - 19
+          - 20
+          - 21
+          - 22
+          - 23
+          - 24
+          - 25
+          - 26
+          - 27
+          - 28
+          - 29
+          - 30
+          - 31
+          - 32
+          - 33
+          - 34
+          - 35
+          - 36
+          - 37
+          - 38
+          - 39
+          - 40
+          - 41
+          - 42
+          - 43
+          - 44
+          - 45
+          - 46
+          - 47
+          - 48
+          - 49
+          - 50
+          - 51
+          - 52
+          - 53
+          - 54
+          - 55
+          - 56
+          - 57
+          - 58
+          - 59
+          - 60
+          - 61
+          - 62
+          - 63
+          - 64
+          - 65
 
     steps:
       - name: Check out repo
@@ -60,33 +119,36 @@ jobs:
           set -o pipefail
           mkdir -p build results logs
           g++ -O3 -std=c++20 scripts/erdos287_cover.cpp -o build/erdos287_cover_hyb \
-            2>&1 | tee logs/erdos287_cover_hyb_build_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.log
+            2>&1 | tee logs/erdos287_cover_hyb_build_${{ matrix.start }}_${{ matrix.start }}.log
 
       - name: Run anomaly chunk
         continue-on-error: true
         run: |
           set -o pipefail
           mkdir -p results logs
-          chunk_suffix="S${{ matrix.chunk.start }}_${{ matrix.chunk.end }}"
+          chunk_suffix="S${{ matrix.start }}_${{ matrix.start }}"
           timeout --signal=TERM --kill-after=120s "${{ github.event.inputs.shell_timeout_minutes }}m" ./build/erdos287_cover_hyb \
             --N "${{ github.event.inputs.N }}" \
             --P "${{ github.event.inputs.P }}" \
             --low "${{ github.event.inputs.low }}" \
             --high "${{ github.event.inputs.high }}" \
-            --start-min "${{ matrix.chunk.start }}" \
-            --start-max "${{ matrix.chunk.end }}" \
+            --start-min "${{ matrix.start }}" \
+            --start-max "${{ matrix.start }}" \
             --progress-every "${{ github.event.inputs.progress_every }}" \
             --progress-out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_anomaly_progress.json" \
             --out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_anomaly_hyb_cpp.json" \
             --dump-anomalies "results/anomalies_N65_candidates_${chunk_suffix}.csv" \
             --anomaly-summary "results/anomaly_candidate_summary_N65_${chunk_suffix}.md" \
-            2>&1 | tee "logs/anomaly_dump_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.log"
+            --chunk-status "results/anomalies_N65_candidates_${chunk_suffix}.status.json" \
+            --chunk-id "${chunk_suffix}" \
+            --num-chunks "64" \
+            2>&1 | tee "logs/anomaly_dump_${{ matrix.start }}_${{ matrix.start }}.log"
 
       - name: Upload chunk artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S${{ matrix.chunk.start }}-${{ matrix.chunk.end }}
+          name: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S${{ matrix.start }}-${{ matrix.start }}
           path: |
             results/**
             logs/**
@@ -113,10 +175,12 @@ jobs:
 
       - name: Merge chunk anomaly CSVs
         run: |
-          mkdir -p results
+          mkdir -p results logs
           python3 scripts/merge_anomaly_chunk_csvs.py artifacts \
             --out-csv results/anomalies_N65_candidates.csv \
             --out-summary results/anomaly_candidate_summary_N65.md \
+            --expected-chunk-count 64 \
+            --require-complete \
             2>&1 | tee logs/merge_anomaly_chunks.log
 
       - name: Upload merged anomaly artifacts

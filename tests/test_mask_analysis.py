@@ -128,6 +128,8 @@ def test_exact_sum_fraction() -> None:
 def test_merge_anomaly_chunk_csvs(tmp_path: Path) -> None:
     first = tmp_path / "anomalies_N65_candidates_S2_10.csv"
     second = tmp_path / "anomalies_N65_candidates_S11_20.csv"
+    first_status = tmp_path / "anomalies_N65_candidates_S2_10.status.json"
+    second_status = tmp_path / "anomalies_N65_candidates_S11_20.status.json"
     header = "candidate_id,escaped_backbone,denominators,length,kill_primes,contains_37_38,contains_61_62,contains_adjacent_factor_pair,sum_minus_1\n"
     first.write_text(
         header + "1,2+31,5;6;7,3,3;5,false,false,false,1/100\n",
@@ -135,6 +137,14 @@ def test_merge_anomaly_chunk_csvs(tmp_path: Path) -> None:
     )
     second.write_text(
         header + "2,19+37,7;8;9,3,2;13,true,false,true,1/200\n",
+        encoding="utf-8",
+    )
+    first_status.write_text(
+        json.dumps({"chunk_id": "S2_10", "status": "complete", "candidates_checked": 10, "exceptions_found": 1}),
+        encoding="utf-8",
+    )
+    second_status.write_text(
+        json.dumps({"chunk_id": "S11_20", "status": "complete", "candidates_checked": 11, "exceptions_found": 1}),
         encoding="utf-8",
     )
 
@@ -149,6 +159,15 @@ def test_merge_anomaly_chunk_csvs(tmp_path: Path) -> None:
             str(out_csv),
             "--out-summary",
             str(out_summary),
+            "--expected-total",
+            "2",
+            "--expected-backbone-count",
+            "2+31=1",
+            "--expected-backbone-count",
+            "19+37=1",
+            "--expected-chunk-count",
+            "2",
+            "--require-complete",
         ],
         check=True,
     )
@@ -158,5 +177,6 @@ def test_merge_anomaly_chunk_csvs(tmp_path: Path) -> None:
     assert "S11_20:2" in merged
     summary = out_summary.read_text(encoding="utf-8")
     assert "anomaly_rows: `2`" in summary
+    assert "complete_chunk_status_files: `2`" in summary
     assert "`2+31`: `1`" in summary
     assert "`19+37`: `1`" in summary

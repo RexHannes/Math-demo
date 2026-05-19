@@ -381,6 +381,9 @@ struct RunConfig {
     string progress_path;
     string anomalies_csv_path;
     string anomaly_summary_path;
+    string chunk_status_path;
+    string chunk_id;
+    int num_chunks = 0;
     uint64_t progress_every = 10000000;
     int sample_limit = 5;
 };
@@ -544,6 +547,53 @@ static AnomalyRecord build_anomaly_record(uint64_t candidate_id,
     return record;
 }
 
+static void write_anomaly_csv_header(ostream& out) {
+    out << "candidate_id,escaped_backbone,denominators,min_denominator,max_denominator,length,gap_pattern,exact_sum,sum_minus_1,kill_mask,kill_primes,kill_count,first_killing_prime,covering_third_primes,contains_37_38,contains_61_62,contains_adjacent_factor_pair";
+    for (int prime : monitored_primes()) {
+        out << ",valuation_profile_p" << prime << ",top_layer_residue_sum_p" << prime;
+    }
+    out << "\n";
+}
+
+static void write_anomaly_csv_record(ostream& out, const AnomalyRecord& record) {
+    vector<int> gaps = gap_pattern(record.S);
+    vector<string> escaped = record.escaped_backbones;
+    vector<string> kill_primes = record.kill_primes;
+    string denominators = join_ints(record.S, ";");
+    string gap_text = join_ints(gaps, ";");
+    string escaped_text = join_strings(escaped, "|");
+    string kill_text = join_strings(kill_primes, ";");
+    string third_primes = covering_third_primes_string(escaped, kill_primes);
+    string first_killing_prime = kill_primes.empty() ? "" : kill_primes.front();
+
+    out << record.candidate_id
+        << "," << csv_escape(escaped_text)
+        << "," << csv_escape(denominators)
+        << "," << record.S.front()
+        << "," << record.S.back()
+        << "," << record.S.size()
+        << "," << csv_escape(gap_text)
+        << "," << csv_escape(record.exact_sum)
+        << "," << csv_escape(record.sum_minus_one)
+        << "," << record.kill_mask
+        << "," << csv_escape(kill_text)
+        << "," << kill_primes.size()
+        << "," << csv_escape(first_killing_prime)
+        << "," << csv_escape(third_primes)
+        << "," << (contains_pair(record.S, 37, 38) ? "true" : "false")
+        << "," << (contains_pair(record.S, 61, 62) ? "true" : "false")
+        << "," << (contains_adjacent_factor_pair(record.S) ? "true" : "false");
+
+    for (const auto& snapshot : record.snapshots) {
+        vector<string> profile_parts;
+        profile_parts.push_back("max=" + to_string(snapshot.max_valuation));
+        profile_parts.push_back("tops=" + join_ints(snapshot.top_denominators, ";"));
+        out << "," << csv_escape(join_strings(profile_parts, ";"))
+            << "," << snapshot.residue_sum_mod_p;
+    }
+    out << "\n";
+}
+
 static RunResult run_cover_hyb(const RunConfig& config) {
     auto started = chrono::steady_clock::now();
     vector<int> primes = primes_upto(config.P);
@@ -583,6 +633,18 @@ static RunResult run_cover_hyb(const RunConfig& config) {
     vector<int> current_top_sum(primes.size(), 0);
     int last_checkpoint_last = 0;
     double last_checkpoint_sum = 0.0;
+    ofstream anomaly_csv;
+    bool stream_anomalies = !config.anomalies_csv_path.empty();
+    if (stream_anomalies) {
+        anomaly_csv.open(config.anomalies_csv_path);
+        if (!anomaly_csv) {
+            cerr << "Could not open anomaly CSV for streaming: " << config.anomalies_csv_path << "\n";
+            stream_anomalies = false;
+        } else {
+            write_anomaly_csv_header(anomaly_csv);
+            anomaly_csv.flush();
+        }
+    }
 
     auto checkpoint_partial = [&](int last, double current_sum, bool interrupted) {
         last_checkpoint_last = last;
@@ -683,14 +745,19 @@ static RunResult run_cover_hyb(const RunConfig& config) {
                     vector<string> escaped = escaping_backbones(kill_mask, anomaly_backbones);
                     if (!escaped.empty()) {
                         vector<string> kill_primes = bits_to_labels(kill_mask, labels);
-                        anomalies.push_back(build_anomaly_record(
+                        AnomalyRecord record = build_anomaly_record(
                             candidate_id,
                             current_set,
                             current_sum,
                             kill_mask,
                             kill_primes,
                             escaped
-                        ));
+                        );
+                        if (stream_anomalies) {
+                            write_anomaly_csv_record(anomaly_csv, record);
+                            anomaly_csv.flush();
+                        }
+                        anomalies.push_back(record);
                     }
                 }
             }
@@ -895,53 +962,6 @@ static void write_anomaly_outputs(const RunResult& result,
                                   const string& summary_path) {
     if (csv_path.empty()) return;
 
-    write_json_atomically(csv_path, [&](ostream& out) {
-        out << "candidate_id,escaped_backbone,denominators,min_denominator,max_denominator,length,gap_pattern,exact_sum,sum_minus_1,kill_mask,kill_primes,kill_count,first_killing_prime,covering_third_primes,contains_37_38,contains_61_62,contains_adjacent_factor_pair";
-        for (int prime : monitored_primes()) {
-            out << ",valuation_profile_p" << prime << ",top_layer_residue_sum_p" << prime;
-        }
-        out << "\n";
-
-        for (const auto& record : result.anomalies) {
-            vector<int> gaps = gap_pattern(record.S);
-            vector<string> escaped = record.escaped_backbones;
-            vector<string> kill_primes = record.kill_primes;
-            string denominators = join_ints(record.S, ";");
-            string gap_text = join_ints(gaps, ";");
-            string escaped_text = join_strings(escaped, "|");
-            string kill_text = join_strings(kill_primes, ";");
-            string third_primes = covering_third_primes_string(escaped, kill_primes);
-            string first_killing_prime = kill_primes.empty() ? "" : kill_primes.front();
-
-            out << record.candidate_id
-                << "," << csv_escape(escaped_text)
-                << "," << csv_escape(denominators)
-                << "," << record.S.front()
-                << "," << record.S.back()
-                << "," << record.S.size()
-                << "," << csv_escape(gap_text)
-                << "," << csv_escape(record.exact_sum)
-                << "," << csv_escape(record.sum_minus_one)
-                << "," << record.kill_mask
-                << "," << csv_escape(kill_text)
-                << "," << kill_primes.size()
-                << "," << csv_escape(first_killing_prime)
-                << "," << csv_escape(third_primes)
-                << "," << (contains_pair(record.S, 37, 38) ? "true" : "false")
-                << "," << (contains_pair(record.S, 61, 62) ? "true" : "false")
-                << "," << (contains_adjacent_factor_pair(record.S) ? "true" : "false");
-
-            for (const auto& snapshot : record.snapshots) {
-                vector<string> profile_parts;
-                profile_parts.push_back("max=" + to_string(snapshot.max_valuation));
-                profile_parts.push_back("tops=" + join_ints(snapshot.top_denominators, ";"));
-                out << "," << csv_escape(join_strings(profile_parts, ";"))
-                    << "," << snapshot.residue_sum_mod_p;
-            }
-            out << "\n";
-        }
-    });
-
     if (summary_path.empty()) return;
     write_json_atomically(summary_path, [&](ostream& out) {
         map<string, int> backbone_counts;
@@ -984,6 +1004,43 @@ static void write_anomaly_outputs(const RunResult& result,
     });
 }
 
+static void write_chunk_status(const RunConfig& config, const RunResult& result) {
+    if (config.chunk_status_path.empty()) return;
+    map<string, int> backbone_counts;
+    for (const auto& record : result.anomalies) {
+        for (const auto& backbone : record.escaped_backbones) backbone_counts[backbone] += 1;
+    }
+
+    write_json_atomically(config.chunk_status_path, [&](ostream& out) {
+        out << "{\n";
+        out << "  \"N\": " << result.N << ",\n";
+        out << "  \"P\": " << result.P << ",\n";
+        out << "  \"low\": " << result.low << ",\n";
+        out << "  \"high\": " << result.high << ",\n";
+        out << "  \"chunk_id\": \"" << json_escape(config.chunk_id.empty() ? "S" + to_string(config.start_min) + "_" + to_string(config.start_max > 0 ? config.start_max : config.N) : config.chunk_id) << "\",\n";
+        out << "  \"num_chunks\": " << config.num_chunks << ",\n";
+        out << "  \"start_min\": " << config.start_min << ",\n";
+        out << "  \"start_max\": " << (config.start_max > 0 ? config.start_max : config.N) << ",\n";
+        out << "  \"status\": \"" << (result.completed ? "complete" : "incomplete") << "\",\n";
+        out << "  \"completed\": " << (result.completed ? "true" : "false") << ",\n";
+        out << "  \"interrupted\": " << (result.interrupted ? "true" : "false") << ",\n";
+        out << "  \"nodes\": " << result.nodes << ",\n";
+        out << "  \"candidates_checked\": " << result.near_count << ",\n";
+        out << "  \"exceptions_found\": " << result.anomalies.size() << ",\n";
+        out << "  \"csv_path\": \"" << json_escape(config.anomalies_csv_path) << "\",\n";
+        out << "  \"pairs\": [\"2+31\", \"19+37\"],\n";
+        out << "  \"backbone_counts\": {";
+        bool first = true;
+        for (const auto& [backbone, count] : backbone_counts) {
+            if (!first) out << ", ";
+            first = false;
+            out << "\"" << json_escape(backbone) << "\": " << count;
+        }
+        out << "}\n";
+        out << "}\n";
+    });
+}
+
 int main(int argc, char** argv) {
     install_signal_handlers();
     RunConfig config;
@@ -1001,6 +1058,9 @@ int main(int argc, char** argv) {
         else if (arg == "--progress-every") config.progress_every = stoull(next());
         else if (arg == "--dump-anomalies") config.anomalies_csv_path = next();
         else if (arg == "--anomaly-summary") config.anomaly_summary_path = next();
+        else if (arg == "--chunk-status") config.chunk_status_path = next();
+        else if (arg == "--chunk-id") config.chunk_id = next();
+        else if (arg == "--num-chunks") config.num_chunks = stoi(next());
     }
 
     if (config.out_path.empty()) {
@@ -1019,6 +1079,7 @@ int main(int argc, char** argv) {
     if (!config.anomalies_csv_path.empty()) {
         write_anomaly_outputs(result, config.anomalies_csv_path, config.anomaly_summary_path);
     }
+    write_chunk_status(config, result);
 
     map<string, string> fields;
     fields["completed"] = result.completed ? "true" : "false";
