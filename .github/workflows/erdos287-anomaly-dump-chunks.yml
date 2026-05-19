@@ -78,7 +78,7 @@ jobs:
           PY
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: erdos287-cover-hyb-binary-${{ github.run_id }}
           path: |
@@ -132,10 +132,10 @@ jobs:
 
     steps:
       - name: Download C++ hyb scanner
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v4
         with:
           name: erdos287-cover-hyb-binary-${{ github.run_id }}
-          path: build
+          path: .
 
       - name: Prepare binary
         run: |
@@ -177,7 +177,7 @@ jobs:
 
       - name: Upload chunk artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S${{ matrix.start }}-${{ matrix.start }}
           path: |
@@ -198,7 +198,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download chunk artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S*
@@ -226,7 +226,7 @@ jobs:
 
       - name: Upload merged anomaly artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-merged
           path: |
