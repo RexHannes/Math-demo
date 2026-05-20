@@ -6,11 +6,11 @@ on:
       N:
         description: "Maximum denominator N"
         required: true
-        default: "65"
+        default: "70"
       P:
         description: "Maximum prime modulus P"
         required: true
-        default: "65"
+        default: "70"
       low:
         description: "Near-sum lower bound"
         required: true
@@ -43,6 +43,28 @@ jobs:
         run: |
           python3 --version
           g++ --version
+
+      - name: Validate optimized start range
+        run: |
+          python3 - <<'PY'
+          from fractions import Fraction
+          import os
+
+          N = int(os.environ["INPUT_N"])
+          low = Fraction(os.environ["INPUT_LOW"])
+          if N < 30:
+              raise SystemExit("This optimized workflow expects N >= 30")
+          suffix_from_31 = sum(Fraction(1, denominator) for denominator in range(31, N + 1))
+          print(f"sum_31_to_N={suffix_from_31} ({float(suffix_from_31):.12f}), low={low}")
+          if suffix_from_31 >= low:
+              raise SystemExit(
+                  "The fixed 2..30 matrix is not complete for these inputs; "
+                  "extend the matrix before running this N/window."
+              )
+          PY
+        env:
+          INPUT_N: ${{ github.event.inputs.N }}
+          INPUT_LOW: ${{ github.event.inputs.low }}
 
       - name: Compile C++ hyb scanner
         run: |
@@ -165,9 +187,9 @@ jobs:
             --progress-every "${{ github.event.inputs.progress_every }}" \
             --progress-out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_anomaly_progress.json" \
             --out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_anomaly_hyb_cpp.json" \
-            --dump-anomalies "results/anomalies_N65_candidates_${chunk_suffix}.csv" \
-            --anomaly-summary "results/anomaly_candidate_summary_N65_${chunk_suffix}.md" \
-            --chunk-status "results/anomalies_N65_candidates_${chunk_suffix}.status.json" \
+            --dump-anomalies "results/anomalies_N${{ github.event.inputs.N }}_candidates_${chunk_suffix}.csv" \
+            --anomaly-summary "results/anomaly_candidate_summary_N${{ github.event.inputs.N }}_${chunk_suffix}.md" \
+            --chunk-status "results/anomalies_N${{ github.event.inputs.N }}_candidates_${chunk_suffix}.status.json" \
             --chunk-id "${chunk_suffix}" \
             --commit-sha "${{ github.sha }}" \
             --source-sha256 "${CPP_SHA256}" \
@@ -208,21 +230,29 @@ jobs:
         run: |
           mkdir -p results logs
           python3 scripts/merge_anomaly_chunk_csvs.py artifacts \
-            --out-csv results/anomalies_N65_candidates.csv \
-            --out-summary results/anomaly_candidate_summary_N65.md \
+            --pattern "anomalies_N${{ github.event.inputs.N }}_candidates_*.csv" \
+            --status-pattern "anomalies_N${{ github.event.inputs.N }}_candidates_*.status.json" \
+            --out-csv results/anomalies_N${{ github.event.inputs.N }}_candidates.csv \
+            --out-summary results/anomaly_candidate_summary_N${{ github.event.inputs.N }}.md \
+            --N "${{ github.event.inputs.N }}" \
+            --P "${{ github.event.inputs.P }}" \
+            --low "${{ github.event.inputs.low }}" \
+            --high "${{ github.event.inputs.high }}" \
             --expected-chunk-count 29 \
+            --denominator-max "${{ github.event.inputs.N }}" \
             --require-complete \
-            2>&1 | tee logs/merge_anomaly_chunks.log
+            2>&1 | tee logs/merge_anomaly_chunks_N${{ github.event.inputs.N }}.log
 
       - name: Verify merged anomaly candidates independently
         run: |
           mkdir -p results logs
-          python3 scripts/verify_anomaly_candidates.py results/anomalies_N65_candidates.csv \
+          python3 scripts/verify_anomaly_candidates.py results/anomalies_N${{ github.event.inputs.N }}_candidates.csv \
+            --N "${{ github.event.inputs.N }}" \
             --P "${{ github.event.inputs.P }}" \
             --low "${{ github.event.inputs.low }}" \
             --high "${{ github.event.inputs.high }}" \
-            --out-report results/anomaly_candidate_verification.md \
-            2>&1 | tee logs/verify_anomaly_candidates.log
+            --out-report results/anomaly_candidate_verification_N${{ github.event.inputs.N }}.md \
+            2>&1 | tee logs/verify_anomaly_candidates_N${{ github.event.inputs.N }}.log
 
       - name: Upload merged anomaly artifacts
         if: always()

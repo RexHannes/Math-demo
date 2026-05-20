@@ -330,7 +330,7 @@ static string covering_third_primes_string(const vector<string>& escaped_backbon
 }
 
 static const vector<int>& monitored_primes() {
-    static const vector<int> primes{2, 13, 17, 19, 31, 37, 41, 47, 53, 59, 61};
+    static const vector<int> primes{2, 13, 17, 19, 31, 37, 41, 47, 53, 59, 61, 67};
     return primes;
 }
 

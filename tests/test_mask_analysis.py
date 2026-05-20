@@ -176,7 +176,7 @@ def test_merge_anomaly_chunk_csvs(tmp_path: Path) -> None:
     assert "S2_10:1" in merged
     assert "S11_20:2" in merged
     summary = out_summary.read_text(encoding="utf-8")
-    assert "anomaly_rows: `2`" in summary
+    assert "total anomaly rows found: `2`" in summary
     assert "complete_chunk_status_files: `2`" in summary
     assert "`2+31`: `1`" in summary
     assert "`19+37`: `1`" in summary

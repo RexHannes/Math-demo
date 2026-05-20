@@ -8,9 +8,6 @@ from fractions import Fraction
 from pathlib import Path
 
 
-DEFAULT_EXPECTED_COUNTS = {"2+31": 68, "19+37": 69}
-
-
 def primes_upto(limit: int) -> list[int]:
     if limit < 2:
         return []
@@ -26,7 +23,7 @@ def primes_upto(limit: int) -> list[int]:
 
 def parse_expected_count(value: str) -> tuple[str, int]:
     if "=" not in value:
-        raise argparse.ArgumentTypeError("Expected count must look like 2+31=68")
+        raise argparse.ArgumentTypeError("Expected count must look like 2+31=NN")
     key, count_text = value.split("=", 1)
     return key.strip(), int(count_text)
 
@@ -41,13 +38,14 @@ def row_backbones(row: dict[str, str]) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Independently verify merged N65 anomaly candidate rows.")
+    parser = argparse.ArgumentParser(description="Independently verify merged anomaly candidate rows.")
     parser.add_argument("csv_path", type=Path)
+    parser.add_argument("--N", type=int, default=None)
     parser.add_argument("--P", type=int, default=65)
     parser.add_argument("--low", default="999/1000")
     parser.add_argument("--high", default="1001/1000")
     parser.add_argument("--out-report", type=Path, default=Path("results/anomaly_candidate_verification.md"))
-    parser.add_argument("--expected-total", type=int, default=137)
+    parser.add_argument("--expected-total", type=int, default=None)
     parser.add_argument("--expected-backbone-count", action="append", type=parse_expected_count, default=None)
     args = parser.parse_args()
 
@@ -55,7 +53,7 @@ def main() -> None:
     prime_to_bit = {label: index for index, label in enumerate(labels)}
     low = Fraction(args.low)
     high = Fraction(args.high)
-    expected_counts = dict(args.expected_backbone_count or DEFAULT_EXPECTED_COUNTS.items())
+    expected_counts = dict(args.expected_backbone_count or [])
 
     rows: list[dict[str, str]] = []
     errors: list[str] = []
@@ -89,7 +87,7 @@ def main() -> None:
                     elif kill_mask & (1 << bit):
                         errors.append(f"row {row_number}: row is killed by escaped backbone prime {prime_label}")
 
-    if len(rows) != args.expected_total:
+    if args.expected_total is not None and len(rows) != args.expected_total:
         errors.append(f"expected {args.expected_total} rows, found {len(rows)}")
     for backbone, expected_count in sorted(expected_counts.items()):
         actual = backbone_counts[backbone]
@@ -98,18 +96,27 @@ def main() -> None:
 
     args.out_report.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# Anomaly Candidate Verification",
+        f"# N{args.N if args.N is not None else 'unknown'} Anomaly Candidate Verification",
         "",
+        f"- N: `{args.N if args.N is not None else 'unknown'}`",
+        f"- P: `{args.P}`",
+        f"- window: `[{args.low}, {args.high}]`",
         f"- csv: `{args.csv_path}`",
         f"- rows: `{len(rows)}`",
-        f"- expected_rows: `{args.expected_total}`",
+        f"- expected_rows: `{args.expected_total if args.expected_total is not None else 'not enforced'}`",
         f"- errors: `{len(errors)}`",
         "",
         "## Backbone Counts",
         "",
     ]
-    for backbone, expected_count in sorted(expected_counts.items()):
-        lines.append(f"- `{backbone}`: `{backbone_counts[backbone]}` / `{expected_count}`")
+    if expected_counts:
+        for backbone, expected_count in sorted(expected_counts.items()):
+            lines.append(f"- `{backbone}`: `{backbone_counts[backbone]}` / `{expected_count}`")
+    elif backbone_counts:
+        for backbone, count in sorted(backbone_counts.items()):
+            lines.append(f"- `{backbone}`: `{count}`")
+    else:
+        lines.append("- none")
     lines.extend(["", "## Checks", ""])
     lines.append(f"- exact sums in window: `{'yes' if not any('exact sum' in error for error in errors) else 'no'}`")
     lines.append(f"- escaped backbone bits absent from kill masks: `{'yes' if not any('killed by escaped' in error for error in errors) else 'no'}`")
@@ -122,8 +129,12 @@ def main() -> None:
 
     print(f"Verified {len(rows)} rows from {args.csv_path}")
     print(f"Errors: {len(errors)}")
-    for backbone, expected_count in sorted(expected_counts.items()):
-        print(f"{backbone}: {backbone_counts[backbone]}/{expected_count}")
+    if expected_counts:
+        for backbone, expected_count in sorted(expected_counts.items()):
+            print(f"{backbone}: {backbone_counts[backbone]}/{expected_count}")
+    else:
+        for backbone, count in sorted(backbone_counts.items()):
+            print(f"{backbone}: {count}")
     if errors:
         raise SystemExit(1)
 
