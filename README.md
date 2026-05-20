@@ -218,13 +218,14 @@ Erdős 287 mask anomaly verification
 
 It runs the focused pytest suite, the mask-level verifier, and optionally the candidate-level anomaly dump.
 
-For the real Stage 2 rerun, prefer the chunked workflow:
+For the real Stage 2 rerun, use the dedicated workflow for the target N:
 
 ```text
-Erdős 287 anomaly dump chunks
+Erdős 287 anomaly dump N65
+Erdős 287 anomaly dump N70
 ```
 
-That run is resumable by chunk and merges the per-chunk anomaly CSV files into:
+Those runs are resumable by chunk and merge the per-chunk anomaly CSV files into:
 
 - `results/anomalies_N<N>_candidates.csv`
 - `results/anomaly_candidate_summary_N<N>.md`
@@ -234,8 +235,8 @@ Completeness rule:
 
 - For N65 only, the candidate-level dump should contain `137` rows total: `68` for `2+31` and `69` for `19+37`.
 - For N70, expected row counts are not hardcoded; the workflow reports observed counts by backbone after all chunks complete.
-- The optimized N70 workflow builds the C++ scanner once, then runs productive starting denominators `2..30` as 29 independent chunks.
-- The workflow validates that starts `31+` cannot reach the lower sum bound before using this reduced matrix.
+- Both dedicated workflows build the C++ scanner once, then run productive starting denominators `2..30` as 29 independent chunks.
+- Each workflow validates that starts `31+` cannot reach the lower sum bound before using this reduced matrix.
 - Each chunk emits a `.status.json` sidecar with completion state, parameters, candidate/anomaly counts, commit SHA, source SHA256, and compile flags.
 - The C++ dumper does not sample, cap, or deduplicate anomaly candidates.
 - If any required sidecar is missing/incomplete, the rerun was interrupted or one or more chunks did not finish.

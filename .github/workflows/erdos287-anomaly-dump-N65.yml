@@ -1,16 +1,8 @@
-name: Erdős 287 anomaly dump chunks
+name: Erdős 287 anomaly dump N65
 
 on:
   workflow_dispatch:
     inputs:
-      N:
-        description: "Maximum denominator N"
-        required: true
-        default: "70"
-      P:
-        description: "Maximum prime modulus P"
-        required: true
-        default: "70"
       low:
         description: "Near-sum lower bound"
         required: true
@@ -50,10 +42,8 @@ jobs:
           from fractions import Fraction
           import os
 
-          N = int(os.environ["INPUT_N"])
+          N = 65
           low = Fraction(os.environ["INPUT_LOW"])
-          if N < 30:
-              raise SystemExit("This optimized workflow expects N >= 30")
           suffix_from_31 = sum(Fraction(1, denominator) for denominator in range(31, N + 1))
           print(f"sum_31_to_N={suffix_from_31} ({float(suffix_from_31):.12f}), low={low}")
           if suffix_from_31 >= low:
@@ -63,7 +53,6 @@ jobs:
               )
           PY
         env:
-          INPUT_N: ${{ github.event.inputs.N }}
           INPUT_LOW: ${{ github.event.inputs.low }}
 
       - name: Compile C++ hyb scanner
@@ -102,7 +91,7 @@ jobs:
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: erdos287-cover-hyb-binary-${{ github.run_id }}
+          name: erdos287-cover-hyb-binary-N65-${{ github.run_id }}
           path: |
             build/erdos287_cover_hyb
             build/build_info.json
@@ -156,7 +145,7 @@ jobs:
       - name: Download C++ hyb scanner
         uses: actions/download-artifact@v4
         with:
-          name: erdos287-cover-hyb-binary-${{ github.run_id }}
+          name: erdos287-cover-hyb-binary-N65-${{ github.run_id }}
           path: .
 
       - name: Prepare binary
@@ -178,18 +167,18 @@ jobs:
           mkdir -p results logs
           chunk_suffix="S${{ matrix.start }}_${{ matrix.start }}"
           timeout --signal=TERM --kill-after=120s "${{ github.event.inputs.shell_timeout_minutes }}m" ./build/erdos287_cover_hyb \
-            --N "${{ github.event.inputs.N }}" \
-            --P "${{ github.event.inputs.P }}" \
+            --N "65" \
+            --P "65" \
             --low "${{ github.event.inputs.low }}" \
             --high "${{ github.event.inputs.high }}" \
             --start-min "${{ matrix.start }}" \
             --start-max "${{ matrix.start }}" \
             --progress-every "${{ github.event.inputs.progress_every }}" \
-            --progress-out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_anomaly_progress.json" \
-            --out "results/N${{ github.event.inputs.N }}_P${{ github.event.inputs.P }}_${chunk_suffix}_anomaly_hyb_cpp.json" \
-            --dump-anomalies "results/anomalies_N${{ github.event.inputs.N }}_candidates_${chunk_suffix}.csv" \
-            --anomaly-summary "results/anomaly_candidate_summary_N${{ github.event.inputs.N }}_${chunk_suffix}.md" \
-            --chunk-status "results/anomalies_N${{ github.event.inputs.N }}_candidates_${chunk_suffix}.status.json" \
+            --progress-out "results/N65_P65_${chunk_suffix}_anomaly_progress.json" \
+            --out "results/N65_P65_${chunk_suffix}_anomaly_hyb_cpp.json" \
+            --dump-anomalies "results/anomalies_N65_candidates_${chunk_suffix}.csv" \
+            --anomaly-summary "results/anomaly_candidate_summary_N65_${chunk_suffix}.md" \
+            --chunk-status "results/anomalies_N65_candidates_${chunk_suffix}.status.json" \
             --chunk-id "${chunk_suffix}" \
             --commit-sha "${{ github.sha }}" \
             --source-sha256 "${CPP_SHA256}" \
@@ -201,7 +190,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S${{ matrix.start }}-${{ matrix.start }}
+          name: erdos287-anomaly-dump-N65-P65-S${{ matrix.start }}-${{ matrix.start }}
           path: |
             results/**
             logs/**
@@ -223,42 +212,48 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-S*
+          pattern: erdos287-anomaly-dump-N65-P65-S*
           merge-multiple: true
 
       - name: Merge chunk anomaly CSVs
         run: |
           mkdir -p results logs
           python3 scripts/merge_anomaly_chunk_csvs.py artifacts \
-            --pattern "anomalies_N${{ github.event.inputs.N }}_candidates_*.csv" \
-            --status-pattern "anomalies_N${{ github.event.inputs.N }}_candidates_*.status.json" \
-            --out-csv results/anomalies_N${{ github.event.inputs.N }}_candidates.csv \
-            --out-summary results/anomaly_candidate_summary_N${{ github.event.inputs.N }}.md \
-            --N "${{ github.event.inputs.N }}" \
-            --P "${{ github.event.inputs.P }}" \
+            --pattern "anomalies_N65_candidates_*.csv" \
+            --status-pattern "anomalies_N65_candidates_*.status.json" \
+            --out-csv results/anomalies_N65_candidates.csv \
+            --out-summary results/anomaly_candidate_summary_N65.md \
+            --N "65" \
+            --P "65" \
             --low "${{ github.event.inputs.low }}" \
             --high "${{ github.event.inputs.high }}" \
+            --expected-total 137 \
+            --expected-backbone-count "2+31=68" \
+            --expected-backbone-count "19+37=69" \
             --expected-chunk-count 29 \
-            --denominator-max "${{ github.event.inputs.N }}" \
+            --denominator-max "65" \
             --require-complete \
-            2>&1 | tee logs/merge_anomaly_chunks_N${{ github.event.inputs.N }}.log
+            2>&1 | tee logs/merge_anomaly_chunks_N65.log
 
       - name: Verify merged anomaly candidates independently
         run: |
           mkdir -p results logs
-          python3 scripts/verify_anomaly_candidates.py results/anomalies_N${{ github.event.inputs.N }}_candidates.csv \
-            --N "${{ github.event.inputs.N }}" \
-            --P "${{ github.event.inputs.P }}" \
+          python3 scripts/verify_anomaly_candidates.py results/anomalies_N65_candidates.csv \
+            --N "65" \
+            --P "65" \
             --low "${{ github.event.inputs.low }}" \
             --high "${{ github.event.inputs.high }}" \
-            --out-report results/anomaly_candidate_verification_N${{ github.event.inputs.N }}.md \
-            2>&1 | tee logs/verify_anomaly_candidates_N${{ github.event.inputs.N }}.log
+            --out-report results/anomaly_candidate_verification_N65.md \
+            --expected-total 137 \
+            --expected-backbone-count "2+31=68" \
+            --expected-backbone-count "19+37=69" \
+            2>&1 | tee logs/verify_anomaly_candidates_N65.log
 
       - name: Upload merged anomaly artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: erdos287-anomaly-dump-N${{ github.event.inputs.N }}-P${{ github.event.inputs.P }}-merged
+          name: erdos287-anomaly-dump-N65-P65-merged
           path: |
             results/**
             logs/**
